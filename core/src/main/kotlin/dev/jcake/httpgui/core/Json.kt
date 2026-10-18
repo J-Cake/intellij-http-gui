@@ -18,7 +18,7 @@ object Json {
     private fun writeTo(out: StringBuilder, value: Any?, indent: String, level: Int) {
         when (value) {
             null -> out.append("null")
-            is String -> out.append(TestScripts.js(value))
+            is String -> out.append(quote(value))
             is Boolean, is Int, is Long -> out.append(value.toString())
             is Number -> {
                 val d = value.toDouble()
@@ -28,7 +28,7 @@ object Json {
                 if (value.isEmpty()) { out.append("{}"); return }
                 out.append("{\n")
                 value.entries.forEachIndexed { i, (k, v) ->
-                    out.append(indent.repeat(level + 1)).append(TestScripts.js(k.toString())).append(": ")
+                    out.append(indent.repeat(level + 1)).append(quote(k.toString())).append(": ")
                     writeTo(out, v, indent, level + 1)
                     if (i < value.size - 1) out.append(',')
                     out.append('\n')
@@ -46,8 +46,24 @@ object Json {
                 }
                 out.append(indent.repeat(level)).append(']')
             }
-            else -> out.append(TestScripts.js(value.toString()))
+            else -> out.append(quote(value.toString()))
         }
+    }
+
+    /** A JSON / JavaScript string literal for [value]. */
+    fun quote(value: String): String = buildString {
+        append('"')
+        for (ch in value) {
+            when (ch) {
+                '\\' -> append("\\\\")
+                '"' -> append("\\\"")
+                '\n' -> append("\\n")
+                '\r' -> append("\\r")
+                '\t' -> append("\\t")
+                else -> if (ch < ' ') append("\\u%04x".format(ch.code)) else append(ch)
+            }
+        }
+        append('"')
     }
 
     private class Reader(val s: String) {

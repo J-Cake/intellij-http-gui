@@ -35,7 +35,7 @@ data class ApiRoute(
             url = url,
             headers = headers,
             body = bodyExample ?: "",
-            responseHandler = Script.Inline(TestScripts.generate(TestScripts.DEFAULT_CONDITIONS, "")),
+            responseHandler = Script.Inline(ScriptTemplates.RESPONSE_HANDLER),
         )
     }
 }

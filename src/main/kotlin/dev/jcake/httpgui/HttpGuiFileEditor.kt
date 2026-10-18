@@ -32,6 +32,10 @@ import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.vfs.VirtualFileManager
 import com.intellij.openapi.vfs.newvfs.BulkFileListener
 import com.intellij.openapi.vfs.newvfs.events.VFileEvent
+import com.intellij.psi.PsiDocumentManager
+import com.intellij.psi.PsiElement
+import com.intellij.psi.PsiLanguageInjectionHost
+import com.intellij.psi.util.PsiTreeUtil
 import com.intellij.ui.JBColor
 import com.intellij.ui.components.ActionLink
 import com.intellij.ui.components.JBLabel
@@ -50,7 +54,7 @@ import dev.jcake.httpgui.core.HttpHeader
 import dev.jcake.httpgui.core.HttpRequest
 import dev.jcake.httpgui.core.HttpSerializer
 import dev.jcake.httpgui.core.Script
-import dev.jcake.httpgui.core.TestScripts
+import dev.jcake.httpgui.core.ScriptTemplates
 import dev.jcake.httpgui.core.VariableInfo
 import dev.jcake.httpgui.core.VariableSource
 import dev.jcake.httpgui.services.HttpEnvironments
@@ -342,7 +346,7 @@ class HttpGuiFileEditor(
             method = "GET",
             url = "$base/",
             headers = listOf(HttpHeader("Accept", "application/json")),
-            responseHandler = Script.Inline(TestScripts.generate(TestScripts.DEFAULT_CONDITIONS, "")),
+            responseHandler = Script.Inline(ScriptTemplates.RESPONSE_HANDLER),
         )
     }
 
@@ -412,6 +416,18 @@ class HttpGuiFileEditor(
             absolute -> server!!
             else -> "http://localhost:8080" + (server ?: "")
         }
+    }
+
+    override fun scriptContext(blockIndex: Int, preRequest: Boolean): PsiElement? {
+        val block = model.blocks.getOrNull(blockIndex) ?: return null
+        val start = (if (preRequest) PRE_REQUEST_SCRIPT else RESPONSE_HANDLER_SCRIPT).find(block.text) ?: return null
+        val offset = block.startOffset + start.range.last + 1
+        val documents = PsiDocumentManager.getInstance(project)
+        documents.commitDocument(document)
+        val file = documents.getPsiFile(document) ?: return null
+        val leaf = file.findElementAt(offset) ?: return null
+        // The JavaScript is injected into this host; anything under the handler would do, the host is most precise.
+        return PsiTreeUtil.getParentOfType(leaf, PsiLanguageInjectionHost::class.java, false) ?: leaf
     }
 
     private fun baseVariable(): String? {
@@ -501,6 +517,8 @@ class HttpGuiFileEditor(
         /** Files with at most this many requests open with every card expanded. */
         private const val EXPAND_ALL_LIMIT = 8
 
+        private val RESPONSE_HANDLER_SCRIPT = Regex("""(?m)^>(?!>)\s*\{%""")
+        private val PRE_REQUEST_SCRIPT = Regex("""(?m)^<(?!>)\s*\{%""")
         private val SPEC_EXTENSIONS = setOf("yaml", "yml", "json")
         private val BASE_URL_VARIABLES = listOf("baseUrl", "base_url", "baseURL", "host", "url", "apiUrl", "server")
     }

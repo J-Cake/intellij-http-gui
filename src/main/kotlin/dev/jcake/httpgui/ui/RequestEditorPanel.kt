@@ -5,6 +5,7 @@ import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.ComboBox
 import com.intellij.openapi.ui.popup.JBPopupFactory
+import com.intellij.psi.PsiElement
 import com.intellij.ui.SimpleListCellRenderer
 import com.intellij.ui.components.JBCheckBox
 import com.intellij.ui.tabs.JBTabs
@@ -25,6 +26,7 @@ import dev.jcake.httpgui.core.HttpRequest
 import dev.jcake.httpgui.core.QueryParam
 import dev.jcake.httpgui.core.STANDARD_METHODS
 import dev.jcake.httpgui.core.Script
+import dev.jcake.httpgui.core.ScriptTemplates
 import dev.jcake.httpgui.core.Urls
 import dev.jcake.httpgui.core.VariableInfo
 import dev.jcake.httpgui.core.Variables
@@ -52,12 +54,17 @@ interface RequestEditorContext {
     /** Routes from the Endpoints view and OpenAPI files, as last collected. */
     fun routes(): List<ApiRoute>
     fun baseUrlFor(route: ApiRoute): String
+
+    /** An element inside block [blockIndex]'s pre-request or response handler script, if it has one. */
+    fun scriptContext(blockIndex: Int, preRequest: Boolean): PsiElement?
 }
 
 /** Form editing a single [HttpRequest]; every change is reported through [onChanged]. */
 class RequestEditorPanel(
     private val ctx: RequestEditorContext,
     private val parentDisposable: Disposable,
+    /** Locates the request's `< {% %}` (true) or `> {% %}` (false) block in the `.http` file's PSI. */
+    private val scriptContext: (preRequest: Boolean) -> PsiElement?,
     private val onChanged: (HttpRequest) -> Unit,
 ) : JPanel(CardLayout()) {
 
@@ -121,12 +128,15 @@ class RequestEditorPanel(
         project, ctx::variables, ctx::environments, ctx::selectedEnvironment, ctx::saveOAuthConfig,
     ) { auth -> update(AUTH) { AuthCodec.apply(it, auth) } }
 
-    private val testsPanel = TestsPanel(project) { handler -> update(TESTS) { it.copy(responseHandler = handler) } }
+    private val testsLabel = hintLabel()
+    private val testsEditor = ScriptEditorField.create(project, "response-handler.js", ScriptTemplates.RESPONSE_HANDLER) { text ->
+        update(TESTS) { it.copy(responseHandler = if (text.isBlank()) null else Script.Inline(text)) }
+    }
 
-    private val preScriptLabel = JBLabel().apply { foreground = UIUtil.getContextHelpForeground() }
-    private val preScriptEditor = CodeEditorField(project, CodeEditorField.fileTypeFor("js"), { text ->
+    private val preScriptLabel = hintLabel()
+    private val preScriptEditor = ScriptEditorField.create(project, "pre-request.js", ScriptTemplates.PRE_REQUEST) { text ->
         update(PRE_SCRIPT) { it.copy(preRequestScript = if (text.isBlank()) null else Script.Inline(text)) }
-    })
+    }
 
     private val flagBoxes = FLAG_TAGS.associateWith { (tag, label) ->
         JBCheckBox("$label  (@$tag)").apply { addActionListener { update(OPTIONS) { r -> r.withTag(tag, null, present = isSelected) } } }
@@ -193,12 +203,13 @@ class RequestEditorPanel(
             add(bodyEditor, BorderLayout.CENTER)
         }
 
+        val testsTab = JPanel(BorderLayout()).apply {
+            add(testsLabel, BorderLayout.NORTH)
+            add(testsEditor, BorderLayout.CENTER)
+        }
         val preTab = JPanel(BorderLayout()).apply {
-            add(JBLabel("Runs before the request is sent (< {% … %}). Use request.variables.set(name, value).").apply {
-                foreground = UIUtil.getContextHelpForeground(); border = JBUI.Borders.empty(4, 0)
-            }, BorderLayout.NORTH)
+            add(preScriptLabel, BorderLayout.NORTH)
             add(preScriptEditor, BorderLayout.CENTER)
-            add(preScriptLabel, BorderLayout.SOUTH)
         }
 
         val options = FormBuilder.createFormBuilder().apply {
@@ -213,7 +224,7 @@ class RequestEditorPanel(
             "Headers" to headersEditor.withBorder(),
             "Body" to bodyTab.withBorder(),
             "Auth" to authPanel.withBorder(),
-            "Tests" to testsPanel.withBorder(),
+            "Tests" to testsTab.withBorder(),
             "Pre-request" to preTab.withBorder(),
             "Options" to optionsTab,
         ).forEach { (title, component) ->
@@ -303,21 +314,9 @@ class RequestEditorPanel(
             }
             if (source != BODY) bodyEditor.setTextSilently(r.body)
             if (source != AUTH) authPanel.setRequest(r)
-            if (source != TESTS) testsPanel.setHandler(r.responseHandler)
-            if (source != PRE_SCRIPT) {
-                when (val pre = r.preRequestScript) {
-                    is Script.FileRef -> {
-                        preScriptEditor.setTextSilently("")
-                        preScriptEditor.isEnabled = false
-                        preScriptLabel.text = "Pre-request script is the external file '${pre.path}'."
-                    }
-                    else -> {
-                        preScriptEditor.isEnabled = true
-                        preScriptLabel.text = ""
-                        preScriptEditor.setTextSilently((pre as? Script.Inline)?.code ?: "")
-                    }
-                }
-            }
+            if (source != TESTS) showScript(r.responseHandler, testsEditor, testsLabel, RESPONSE_HINT)
+            if (source != PRE_SCRIPT) showScript(r.preRequestScript, preScriptEditor, preScriptLabel, PRE_REQUEST_HINT)
+            refreshScriptContext()
             if (source != OPTIONS) {
                 flagBoxes.forEach { (tag, box) -> box.isSelected = r.tag(tag) != null }
                 valueTags.forEach { (tag, field) ->
@@ -330,6 +329,33 @@ class RequestEditorPanel(
         } finally {
             updating = false
         }
+    }
+
+    /** Shows an inline script for editing; a script in an external file is only named. */
+    private fun showScript(script: Script?, editor: ScriptEditorField, label: JBLabel, hint: String) {
+        when (script) {
+            is Script.FileRef -> {
+                editor.setTextSilently("")
+                editor.isEnabled = false
+                label.text = "The script is the external file '${script.path}'; edit it there."
+            }
+            else -> {
+                editor.isEnabled = true
+                label.text = hint
+                editor.setTextSilently((script as? Script.Inline)?.code ?: "")
+            }
+        }
+    }
+
+    /** Re-points the script editors at their blocks in the file, which may have moved after edits. */
+    fun refreshScriptContext() {
+        testsEditor.setContext(scriptContext(false))
+        preScriptEditor.setContext(scriptContext(true))
+    }
+
+    private fun hintLabel() = JBLabel().apply {
+        foreground = UIUtil.getContextHelpForeground()
+        border = JBUI.Borders.emptyBottom(4)
     }
 
     private fun updateResolved(r: HttpRequest) {
@@ -413,6 +439,8 @@ class RequestEditorPanel(
 
     companion object {
         private const val EMPTY_CARD = "empty"
+        private const val RESPONSE_HINT = "Response handler (> {% … %}): runs after the response arrives; client.test and client.assert define tests."
+        private const val PRE_REQUEST_HINT = "Pre-request script (< {% … %}): runs before the request is sent; request.variables.set defines variables."
         private const val EDITOR_CARD = "editor"
 
         private const val METHOD = "method"

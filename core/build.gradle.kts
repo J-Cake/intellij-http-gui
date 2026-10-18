@@ -21,4 +21,6 @@ dependencies {
 
 tasks.test {
     useJUnitPlatform()
+    // SampleFilesTest reads the sample files.
+    inputs.dir(rootDir.resolve("samples"))
 }

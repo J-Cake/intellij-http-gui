@@ -16,9 +16,8 @@ class SampleFilesTest {
         assertEquals(AuthConfig.OAuth2("petstore"), AuthCodec.detect(requests[0]))
         assertEquals(AuthConfig.ApiKey("X-API-Key", "{{apiKey}}"), AuthCodec.detect(requests[1]))
 
-        val tests = TestScripts.parse((requests[0].responseHandler as Script.Inline).code)
-        assertEquals(2, tests.conditions.size)
-        assertEquals("    client.global.set(\"firstPetId\", jsonPath(response.body, \"$[0].id\"));", tests.customCode)
+        val handler = (requests[0].responseHandler as Script.Inline).code
+        assertEquals(5, handler.lines().size)
 
         val rebuilt = model.blocks.mapIndexed { i, b ->
             b.request?.let { HttpSerializer.serializeBlock(it, b, i == model.blocks.lastIndex) } ?: b.text

@@ -7,32 +7,6 @@ import kotlin.test.assertTrue
 
 class FeatureCodecsTest {
     @Test
-    fun `test conditions round trip through generated script`() {
-        val conditions = listOf(
-            TestCondition(TestSubject.STATUS, "", TestOperator.EQUALS, "200"),
-            TestCondition(TestSubject.HEADER, "Content-Type", TestOperator.CONTAINS, "json"),
-            TestCondition(TestSubject.JSON_PATH, "$.items[0].id", TestOperator.EXISTS, ""),
-            TestCondition(TestSubject.JSON_PATH, "$.name", TestOperator.MATCHES, "^J\\w+\"", name = "Name looks right"),
-            TestCondition(TestSubject.BODY, "", TestOperator.NOT_CONTAINS, "error"),
-            TestCondition(TestSubject.CONTENT_TYPE, "", TestOperator.EQUALS, "application/json"),
-            TestCondition(TestSubject.STATUS, "", TestOperator.LESS_THAN, "500"),
-        )
-        val custom = "client.global.set(\"id\", response.body.id);"
-        val code = TestScripts.generate(conditions, custom)
-        val parsed = TestScripts.parse(code)
-        assertEquals(conditions, parsed.conditions)
-        assertEquals(custom, parsed.customCode)
-    }
-
-    @Test
-    fun `unknown tests are kept as custom code`() {
-        val code = "client.test(\"x\", function() {\n  client.assert(true);\n});"
-        val parsed = TestScripts.parse(code)
-        assertTrue(parsed.conditions.isEmpty())
-        assertEquals(code, parsed.customCode)
-    }
-
-    @Test
     fun `auth detection and application`() {
         val base = HttpRequest(url = "https://x/a?q=1", headers = listOf(HttpHeader("Accept", "*/*")))
         assertEquals(AuthConfig.None, AuthCodec.detect(base))

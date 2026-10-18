@@ -109,7 +109,7 @@ class RequestCard(
     fun setExpanded(value: Boolean) {
         isExpanded = value
         if (value && form == null) {
-            form = RequestEditorPanel(host.context, disposable) { changed ->
+            form = RequestEditorPanel(host.context, disposable, { pre -> host.context.scriptContext(this.blockIndex, pre) }) { changed ->
                 request = changed
                 updateHeader()
                 host.requestChanged(this, changed)
@@ -135,7 +135,7 @@ class RequestCard(
         val formRequest = form?.request()
         this.request = if (pushToForm || formRequest == null) request else formRequest
         updateHeader()
-        if (pushToForm && formRequest != request) form?.setRequest(request)
+        if (pushToForm && formRequest != request) form?.setRequest(request) else form?.refreshScriptContext()
     }
 
     fun refreshEnvironment() {
