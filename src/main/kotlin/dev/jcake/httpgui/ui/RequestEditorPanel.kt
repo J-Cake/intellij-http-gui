@@ -7,12 +7,12 @@ import com.intellij.openapi.ui.popup.JBPopupFactory
 import com.intellij.ui.SimpleListCellRenderer
 import com.intellij.ui.components.JBCheckBox
 import com.intellij.ui.components.JBLabel
-import com.intellij.ui.components.JBTabbedPane
 import com.intellij.ui.components.JBTextField
 import com.intellij.ui.components.fields.ExtendableTextField
 import com.intellij.util.ui.FormBuilder
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
+import com.intellij.util.ui.WrapLayout
 import dev.jcake.httpgui.core.ApiRoute
 import dev.jcake.httpgui.core.AuthCodec
 import dev.jcake.httpgui.core.EnvironmentSet
@@ -33,7 +33,8 @@ import java.awt.GridBagLayout
 import javax.swing.JButton
 import javax.swing.JComponent
 import javax.swing.JPanel
-import javax.swing.JTabbedPane
+import javax.swing.ButtonGroup
+import javax.swing.JToggleButton
 import javax.swing.JTextField
 import javax.swing.event.DocumentEvent
 import javax.swing.event.DocumentListener
@@ -140,8 +141,30 @@ class RequestEditorPanel(
         addActionListener { update(OPTIONS) { r -> r.copy(httpVersion = (selectedItem as? String)?.ifEmpty { null }) } }
     }
 
-    // One scrollable row of tabs rather than wrapped rows when the designer is narrow.
-    private val tabs = JBTabbedPane().apply { tabLayoutPolicy = JTabbedPane.SCROLL_TAB_LAYOUT }
+    /** Section switcher: a wrapping strip of toggle buttons (stays readable when the designer is narrow). */
+    private inner class Sections : JPanel(BorderLayout()) {
+        private val cards = CardLayout()
+        private val content = JPanel(cards)
+        private val strip = JPanel(WrapLayout(FlowLayout.LEFT, JBUI.scale(2), JBUI.scale(2)))
+        private val group = ButtonGroup()
+
+        init {
+            add(strip, BorderLayout.NORTH)
+            add(content, BorderLayout.CENTER)
+        }
+
+        fun addTab(title: String, component: JComponent) {
+            content.add(component, title)
+            val button = JToggleButton(title).apply {
+                isSelected = group.buttonCount == 0
+                addActionListener { cards.show(content, title) }
+            }
+            group.add(button)
+            strip.add(button)
+        }
+    }
+
+    private val tabs = Sections()
 
     init {
         add(JBLabel("Select a request on the left, or add a new one.", UIUtil.ComponentStyle.LARGE).apply {
