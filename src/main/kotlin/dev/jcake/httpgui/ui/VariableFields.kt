@@ -5,6 +5,8 @@ import com.intellij.codeInsight.completion.CompletionParameters
 import com.intellij.codeInsight.completion.InsertHandler
 import com.intellij.codeInsight.lookup.CharFilter
 import com.intellij.codeInsight.lookup.LookupElement
+import com.intellij.codeInsight.lookup.LookupElementBuilder
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.editor.EditorFactory
 import com.intellij.openapi.editor.event.DocumentEvent
 import com.intellij.openapi.editor.event.DocumentListener
@@ -16,6 +18,7 @@ import com.intellij.openapi.project.Project
 import com.intellij.ui.EditorTextField
 import com.intellij.ui.TextFieldWithAutoCompletion
 import com.intellij.ui.TextFieldWithAutoCompletionListProvider
+import dev.jcake.httpgui.core.ApiRoute
 import dev.jcake.httpgui.core.VariableInfo
 import dev.jcake.httpgui.core.Variables
 
@@ -134,6 +137,114 @@ class CodeEditorField(
                 ct.contains("yaml") -> fileTypeFor("yaml")
                 else -> PlainTextFileType.INSTANCE
             }
+        }
+    }
+}
+
+/** An entry offered by the URL field: an environment variable or an OpenAPI / Endpoints route. */
+sealed class UrlSuggestion {
+    data class Variable(val info: VariableInfo) : UrlSuggestion()
+
+    /** [url] is the route's path with path parameters as `{{variables}}`, prefixed by the base URL. */
+    data class Route(val route: ApiRoute, val url: String) : UrlSuggestion()
+}
+
+/**
+ * Inside `{{` the URL field completes variables; anywhere else it completes routes, matched against
+ * the full URL, the path, or "METHOD path".
+ */
+class UrlCompletionProvider(
+    private val variables: () -> List<VariableInfo>,
+    private val routes: () -> List<UrlSuggestion.Route>,
+    private val onRoutePicked: (ApiRoute) -> Unit,
+) : TextFieldWithAutoCompletionListProvider<UrlSuggestion>(null) {
+
+    override fun getLookupString(item: UrlSuggestion): String = when (item) {
+        is UrlSuggestion.Variable -> item.info.name
+        is UrlSuggestion.Route -> item.url
+    }
+
+    override fun getTypeText(item: UrlSuggestion): String? = when (item) {
+        is UrlSuggestion.Variable -> item.info.environment?.let { "${item.info.source.label} · $it" } ?: item.info.source.label
+        is UrlSuggestion.Route -> item.route.source.ifEmpty { null }
+    }
+
+    override fun getTailText(item: UrlSuggestion): String? = when (item) {
+        is UrlSuggestion.Variable -> item.info.value?.let { " = " + if (it.length > 40) it.take(40) + "…" else it }
+        is UrlSuggestion.Route -> item.route.summary?.let { "  $it" }
+    }
+
+    override fun createLookupBuilder(item: UrlSuggestion): LookupElementBuilder {
+        val builder = super.createLookupBuilder(item)
+        if (item !is UrlSuggestion.Route) return builder
+        val method = item.route.method
+        return builder
+            .withLookupStrings(setOf(item.route.path, "$method ${item.route.path}"))
+            .withPresentableText("${method.padEnd(7)} ${item.url}")
+            .withBoldness(false)
+    }
+
+    override fun getPrefix(text: String, offset: Int): String =
+        Variables.completionPrefix(text, offset) ?: text.substring(0, offset.coerceIn(0, text.length)).trimStart()
+
+    override fun getItems(prefix: String?, cached: Boolean, parameters: CompletionParameters?): Collection<UrlSuggestion> {
+        if (prefix == null || !cached) return emptyList()
+        val text = parameters?.editor?.document?.text ?: ""
+        val offset = parameters?.offset ?: text.length
+        return if (Variables.completionPrefix(text, offset) != null) variables().map { UrlSuggestion.Variable(it) } else routes()
+    }
+
+    override fun acceptChar(c: Char): CharFilter.Result? = when {
+        c.isWhitespace() || c == '}' -> CharFilter.Result.HIDE_LOOKUP
+        else -> CharFilter.Result.ADD_TO_PREFIX
+    }
+
+    override fun createInsertHandler(item: UrlSuggestion): InsertHandler<LookupElement> = when (item) {
+        is UrlSuggestion.Variable -> InsertHandler { context, _ ->
+            val document = context.document
+            val tail = context.tailOffset
+            if (!document.charsSequence.startsWith("}}", tail)) document.insertString(tail, "}}")
+            context.editor.caretModel.moveToOffset(tail + 2)
+        }
+        // Method, query parameters, headers and body are applied once the completion has finished.
+        is UrlSuggestion.Route -> InsertHandler { _, _ -> ApplicationManager.getApplication().invokeLater { onRoutePicked(item.route) } }
+    }
+
+    override fun compare(item1: UrlSuggestion, item2: UrlSuggestion): Int = getLookupString(item1).compareTo(getLookupString(item2), ignoreCase = true)
+}
+
+/** URL field: routes and `{{variables}}` completion. */
+class UrlTextField(
+    private val project: Project,
+    variables: () -> List<VariableInfo>,
+    routes: () -> List<UrlSuggestion.Route>,
+    onRoutePicked: (ApiRoute) -> Unit,
+    private val onTextChanged: (String) -> Unit,
+) : TextFieldWithAutoCompletion<UrlSuggestion>(project, UrlCompletionProvider(variables, routes, onRoutePicked), false, "") {
+    private var silent = false
+
+    init {
+        addDocumentListener(object : DocumentListener {
+            override fun documentChanged(event: DocumentEvent) {
+                if (silent) return
+                val ed = editor
+                val text = event.document.text
+                val caret = ed?.caretModel?.offset ?: (event.offset + event.newLength)
+                val typed = event.newFragment.toString()
+                val startsVariable = Variables.completionPrefix(text, caret) == ""
+                if (ed != null && (startsVariable || typed == "/")) AutoPopupController.getInstance(project).scheduleAutoPopup(ed)
+                onTextChanged(text)
+            }
+        })
+    }
+
+    fun setTextSilently(value: String) {
+        if (text == value) return
+        silent = true
+        try {
+            text = value
+        } finally {
+            silent = false
         }
     }
 }

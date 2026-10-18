@@ -14,30 +14,22 @@ import com.intellij.openapi.fileEditor.FileEditor
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileEditor.FileEditorState
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
-import com.intellij.openapi.project.DumbAwareAction
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.ComboBox
-import com.intellij.openapi.ui.MessageType
-import com.intellij.openapi.ui.popup.Balloon
-import com.intellij.openapi.ui.popup.JBPopupFactory
 import com.intellij.openapi.util.UserDataHolderBase
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.vfs.VirtualFileManager
 import com.intellij.openapi.vfs.newvfs.BulkFileListener
 import com.intellij.openapi.vfs.newvfs.events.VFileEvent
-import com.intellij.ui.CollectionListModel
-import com.intellij.ui.ColoredListCellRenderer
-import com.intellij.ui.JBColor
-import com.intellij.ui.JBSplitter
 import com.intellij.ui.SimpleListCellRenderer
-import com.intellij.ui.SimpleTextAttributes
-import com.intellij.ui.ToolbarDecorator
-import com.intellij.ui.awt.RelativePoint
+import com.intellij.ui.components.ActionLink
 import com.intellij.ui.components.JBLabel
-import com.intellij.ui.components.JBList
+import com.intellij.ui.components.JBScrollPane
+import com.intellij.ui.components.panels.VerticalLayout
 import com.intellij.util.Alarm
 import com.intellij.util.concurrency.AppExecutorUtil
 import com.intellij.util.ui.JBUI
+import com.intellij.util.ui.UIUtil
 import dev.jcake.httpgui.core.ApiRoute
 import dev.jcake.httpgui.core.DYNAMIC_VARIABLES
 import dev.jcake.httpgui.core.EnvironmentSet
@@ -52,82 +44,56 @@ import dev.jcake.httpgui.core.VariableInfo
 import dev.jcake.httpgui.core.VariableSource
 import dev.jcake.httpgui.services.HttpEnvironments
 import dev.jcake.httpgui.services.OpenApiRoutes
+import dev.jcake.httpgui.ui.RequestCard
+import dev.jcake.httpgui.ui.RequestCardHost
 import dev.jcake.httpgui.ui.RequestEditorContext
-import dev.jcake.httpgui.ui.RequestEditorPanel
 import java.awt.BorderLayout
-import java.awt.Color
+import java.awt.Dimension
 import java.awt.FlowLayout
+import java.awt.Rectangle
 import java.beans.PropertyChangeListener
 import javax.swing.JButton
 import javax.swing.JComponent
-import javax.swing.JList
 import javax.swing.JPanel
+import javax.swing.Scrollable
+import javax.swing.SwingConstants
 
 /**
- * Graphical editor for an `.http` file. It works on the same [Document] as the text editor:
- * GUI edits rewrite only the affected request block, and document changes from any other source
- * (typing in the text tab, VCS updates, external edits) are re-parsed and shown live.
+ * Graphical editor for an `.http` file, laid out like a notebook: every request is a card in one
+ * scrolling column. It works on the same [Document] as the text editor: GUI edits rewrite only the
+ * affected request block, and document changes from any other source (the text editor, VCS,
+ * external tools) are re-parsed and shown live.
  */
 class HttpGuiFileEditor(
     override val project: Project,
     private val httpFile: VirtualFile,
-) : UserDataHolderBase(), FileEditor, RequestEditorContext {
-
-    private data class RequestItem(val blockIndex: Int, val request: HttpRequest)
+) : UserDataHolderBase(), FileEditor, RequestEditorContext, RequestCardHost {
 
     private val document: Document = FileDocumentManager.getInstance().getDocument(httpFile)
         ?: error("No document for ${httpFile.path}")
     private var model: HttpFileModel = HttpFileParser.parse(document.text)
     private var environments: EnvironmentSet = EnvironmentSet.EMPTY
     private var selectedEnv: String? = PropertiesComponent.getInstance(project).getValue(ENV_KEY)
+    @Volatile
+    private var routes: List<ApiRoute> = emptyList()
 
     private var ownChange = false
     private var fillingEnvCombo = false
-    private var suppressSelection = false
-    private var selectedBlock = -1
     private var pendingWrite: Pair<Int, HttpRequest>? = null
 
     private val reloadAlarm = Alarm(Alarm.ThreadToUse.SWING_THREAD, this)
     private val writeAlarm = Alarm(Alarm.ThreadToUse.SWING_THREAD, this)
     private val envAlarm = Alarm(Alarm.ThreadToUse.SWING_THREAD, this)
+    private val routesAlarm = Alarm(Alarm.ThreadToUse.SWING_THREAD, this)
 
-    private val listModel = CollectionListModel<RequestItem>()
-    private val list = JBList(listModel)
+    private val cards = mutableListOf<RequestCard>()
+    private val column = ColumnPanel()
     private val envCombo = ComboBox<String>()
-    private val form = RequestEditorPanel(this) { request -> scheduleWrite(request) }
     private val root: JComponent
 
+    override val context: RequestEditorContext get() = this
+
     init {
-        list.cellRenderer = object : ColoredListCellRenderer<RequestItem>() {
-            override fun customizeCellRenderer(list: JList<out RequestItem>, value: RequestItem?, index: Int, selected: Boolean, hasFocus: Boolean) {
-                val r = value?.request ?: return
-                append(r.method.padEnd(7), SimpleTextAttributes(SimpleTextAttributes.STYLE_BOLD, methodColor(r.method)))
-                append(" " + r.displayName())
-                if (r.name != null || !r.title.isNullOrBlank()) append("  " + r.url, SimpleTextAttributes.GRAYED_ATTRIBUTES)
-            }
-        }
-        list.emptyText.text = "No requests in this file"
-        list.addListSelectionListener { e ->
-            if (e.valueIsAdjusting || suppressSelection) return@addListSelectionListener
-            flushWrite()
-            val item = list.selectedValue
-            selectedBlock = item?.blockIndex ?: -1
-            form.setRequest(item?.request)
-        }
-
-        val listPanel = ToolbarDecorator.createDecorator(list)
-            .setAddAction { addRequest(newRequest()) }
-            .setRemoveAction { removeSelected() }
-            .disableUpDownActions()
-            .addExtraAction(DumbAwareAction.create("New Request from OpenAPI Route", AllIcons.ToolbarDecorator.Import) { e ->
-                val anchor = e.inputEvent?.component as? JComponent ?: list
-                pickRoute(anchor) { route -> addRequest(route.toRequest(baseUrlFor(route))) }
-            })
-            .addExtraAction(DumbAwareAction.create("Duplicate Request", AllIcons.Actions.Copy) {
-                list.selectedValue?.let { item -> addRequest(item.request.copy(hasSeparator = true, title = item.request.title?.let { t -> "$t (copy)" })) }
-            })
-            .createPanel()
-
         envCombo.renderer = SimpleListCellRenderer.create<String>("") { it.ifEmpty { "No environment" } }
         envCombo.addActionListener {
             if (fillingEnvCombo) return@addActionListener
@@ -135,7 +101,7 @@ class HttpGuiFileEditor(
             if (env != selectedEnv) {
                 selectedEnv = env
                 PropertiesComponent.getInstance(project).setValue(ENV_KEY, env)
-                form.refreshEnvironment()
+                cards.forEach { it.refreshEnvironment() }
             }
         }
 
@@ -143,21 +109,22 @@ class HttpGuiFileEditor(
             add(JBLabel("Environment:"))
             add(envCombo)
             add(JButton("Reload", AllIcons.Actions.Refresh).apply {
-                toolTipText = "Re-read the file and environment files"
-                addActionListener { reloadNow(); reloadEnvironments() }
+                toolTipText = "Re-read the file, environment files and OpenAPI routes"
+                addActionListener {
+                    reloadNow(pushToForms = true)
+                    reloadEnvironments()
+                    refreshRoutes()
+                }
             })
-            add(JButton("Open in Text Editor", AllIcons.Actions.EditSource).apply {
-                toolTipText = "Show this request in the text editor, where it can be run"
-                addActionListener { openInTextEditor() }
-            })
+            add(JButton("Expand All", AllIcons.Actions.Expandall).apply { addActionListener { cards.forEach { it.setExpanded(true) } } })
+            add(JButton("Collapse All", AllIcons.Actions.Collapseall).apply { addActionListener { cards.forEach { it.setExpanded(false) } } })
         }
 
         root = JPanel(BorderLayout()).apply {
             add(toolbar, BorderLayout.NORTH)
-            add(JBSplitter(false, 0.25f).apply {
-                firstComponent = listPanel
-                secondComponent = form
-                splitterProportionKey = "httpgui.splitter"
+            add(JBScrollPane(column).apply {
+                border = JBUI.Borders.empty()
+                verticalScrollBar.unitIncrement = JBUI.scale(16)
             }, BorderLayout.CENTER)
         }
 
@@ -167,72 +134,91 @@ class HttpGuiFileEditor(
             }
         }, this)
 
-        // Environment files: react to saved changes and to unsaved edits in open editors.
+        // Environment and OpenAPI files: react to saved changes and to unsaved edits in open editors.
         project.messageBus.connect(this).subscribe(VirtualFileManager.VFS_CHANGES, object : BulkFileListener {
             override fun after(events: List<VFileEvent>) {
-                if (events.any { it.path.substringAfterLast('/') in HttpEnvironments.FILE_NAMES }) scheduleEnvReload()
+                val names = events.map { it.path.substringAfterLast('/') }
+                if (names.any { it in HttpEnvironments.FILE_NAMES }) scheduleEnvReload()
+                if (names.any { it.substringAfterLast('.').lowercase() in SPEC_EXTENSIONS }) scheduleRoutesRefresh()
             }
         })
         EditorFactory.getInstance().eventMulticaster.addDocumentListener(object : DocumentListener {
             override fun documentChanged(event: DocumentEvent) {
                 val name = FileDocumentManager.getInstance().getFile(event.document)?.name ?: return
                 if (name in HttpEnvironments.FILE_NAMES) scheduleEnvReload()
+                else if (name.substringAfterLast('.').lowercase() in SPEC_EXTENSIONS) scheduleRoutesRefresh()
             }
         }, this)
 
-        updateList()
-        if (listModel.size > 0) list.selectedIndex = 0
+        syncCards(pushToForms = true)
         reloadEnvironments()
+        refreshRoutes()
     }
 
     // ---- document -> GUI ----------------------------------------------------------------------
 
     private fun scheduleReload() {
         reloadAlarm.cancelAllRequests()
-        reloadAlarm.addRequest({ reloadNow() }, RELOAD_DELAY_MS)
+        reloadAlarm.addRequest({ reloadNow(pushToForms = true) }, RELOAD_DELAY_MS)
     }
 
-    private fun reloadNow() {
+    private fun reloadNow(pushToForms: Boolean) {
         flushWrite()
         model = HttpFileParser.parse(document.text)
-        updateList()
-        val item = list.selectedValue
-        if (item?.request != form.request()) form.setRequest(item?.request)
+        syncCards(pushToForms)
     }
 
-    /** Syncs the list with [model], keeping the selected position. */
-    private fun updateList() {
-        val items = model.blocks.mapIndexedNotNull { i, b -> b.request?.let { RequestItem(i, it) } }
-        val selectedPosition = list.selectedIndex
-        suppressSelection = true
-        try {
-            if (items.size == listModel.size) {
-                items.forEachIndexed { i, item -> if (listModel.getElementAt(i) != item) listModel.setElementAt(item, i) }
-            } else {
-                listModel.replaceAll(items)
-                if (items.isNotEmpty()) list.selectedIndex = selectedPosition.coerceIn(0, items.lastIndex)
-            }
-        } finally {
-            suppressSelection = false
+    /**
+     * Makes the cards match [model]. Existing cards are reused by position, so focus and expansion
+     * survive edits; cards are only added or removed when the number of requests changes.
+     */
+    private fun syncCards(pushToForms: Boolean) {
+        val requests = model.blocks.mapIndexedNotNull { i, b -> b.request?.let { i to it } }
+        var structureChanged = false
+        while (cards.size > requests.size) {
+            cards.removeAt(cards.lastIndex)
+            structureChanged = true
         }
-        selectedBlock = list.selectedValue?.blockIndex ?: -1
-        if (list.selectedValue == null) form.setRequest(null)
+        requests.forEachIndexed { position, (blockIndex, request) ->
+            if (position < cards.size) {
+                cards[position].update(blockIndex, request, pushToForms)
+            } else {
+                val expanded = requests.size <= EXPAND_ALL_LIMIT || position == 0
+                cards += RequestCard(this, blockIndex, request, expanded)
+                structureChanged = true
+            }
+        }
+        if (structureChanged || column.componentCount == 0) rebuildColumn()
+    }
+
+    private fun rebuildColumn() {
+        column.removeAll()
+        if (cards.isEmpty()) {
+            column.add(JBLabel("This file has no requests yet.", UIUtil.ComponentStyle.LARGE).apply {
+                foreground = UIUtil.getContextHelpForeground()
+                horizontalAlignment = SwingConstants.CENTER
+                border = JBUI.Borders.empty(24)
+            })
+        }
+        cards.forEachIndexed { position, card ->
+            column.add(addLink(position))
+            column.add(card)
+        }
+        column.add(addLink(cards.size))
+        column.revalidate()
+        column.repaint()
+    }
+
+    private fun addLink(position: Int): JComponent = JPanel(FlowLayout(FlowLayout.CENTER, 0, 0)).apply {
+        isOpaque = false
+        add(ActionLink("+ Add request") { insertRequest(position, newRequest()) })
     }
 
     // ---- GUI -> document ----------------------------------------------------------------------
 
-    private fun scheduleWrite(request: HttpRequest) {
-        if (selectedBlock < 0) return
-        pendingWrite = selectedBlock to request
-        val position = list.selectedIndex
-        if (position >= 0) {
-            suppressSelection = true
-            try {
-                listModel.setElementAt(RequestItem(selectedBlock, request), position)
-            } finally {
-                suppressSelection = false
-            }
-        }
+    override fun requestChanged(card: RequestCard, request: HttpRequest) {
+        pendingWrite?.let { (index, _) -> if (index != card.blockIndex) flushWrite() }
+        pendingWrite = card.blockIndex to request
         writeAlarm.cancelAllRequests()
         writeAlarm.addRequest({ flushWrite() }, WRITE_DELAY_MS)
     }
@@ -248,7 +234,7 @@ class HttpGuiFileEditor(
             if (text != block.text) writeDocument("Edit HTTP Request") { document.replaceString(block.startOffset, block.endOffset, text) }
         }
         model = HttpFileParser.parse(document.text)
-        updateList()
+        syncCards(pushToForms = false)
     }
 
     private fun writeDocument(name: String, action: () -> Unit): Boolean {
@@ -262,29 +248,51 @@ class HttpGuiFileEditor(
         return true
     }
 
-    private fun addRequest(request: HttpRequest) {
+    /** Inserts [request] so that it becomes the request at [position] (or the last one). */
+    private fun insertRequest(position: Int, request: HttpRequest) {
         flushWrite()
-        val text = document.text
-        val prefix = when {
-            text.isBlank() -> ""
-            text.endsWith("\n\n") -> ""
-            text.endsWith("\n") -> "\n"
-            else -> "\n\n"
+        val serialized = HttpSerializer.serialize(request.copy(hasSeparator = true))
+        val target = cards.getOrNull(position)?.let { model.blocks.getOrNull(it.blockIndex) }
+        val existing = target?.request
+        val ok = if (target == null || existing == null) {
+            val text = document.text
+            val prefix = when {
+                text.isBlank() -> ""
+                text.endsWith("\n\n") -> ""
+                text.endsWith("\n") -> "\n"
+                else -> "\n\n"
+            }
+            // A blank document is replaced entirely; otherwise the request is appended.
+            val start = if (text.isBlank()) 0 else text.length
+            writeDocument("Add HTTP Request") { document.replaceString(start, text.length, prefix + serialized + "\n") }
+        } else {
+            // A request at the very top may lack a ### separator; it needs one once something precedes it.
+            val following = if (existing.hasSeparator) target.text else {
+                HttpSerializer.serializeBlock(existing.copy(hasSeparator = true), target, target == model.blocks.last())
+            }
+            writeDocument("Add HTTP Request") { document.replaceString(target.startOffset, target.endOffset, serialized + "\n\n" + following) }
         }
-        // A blank document is replaced entirely; otherwise the block is appended.
-        val start = if (text.isBlank()) 0 else text.length
-        val block = prefix + HttpSerializer.serialize(request.copy(hasSeparator = true)) + "\n"
-        if (!writeDocument("Add HTTP Request") { document.replaceString(start, text.length, block) }) return
+        if (!ok) return
         model = HttpFileParser.parse(document.text)
-        updateList()
-        list.selectedIndex = listModel.size - 1
-        list.ensureIndexIsVisible(listModel.size - 1)
+        // Give the new request its own card so the neighbours keep their forms and expansion state.
+        val at = position.coerceIn(0, cards.size)
+        cards.add(at, RequestCard(this, 0, request, expanded = true))
+        syncCards(pushToForms = true)
+        rebuildColumn()
+        val card = cards[at.coerceAtMost(cards.lastIndex)]
+        column.validate()
+        column.scrollRectToVisible(card.bounds)
     }
 
-    private fun removeSelected() {
+    override fun duplicate(card: RequestCard) {
+        val position = cards.indexOf(card)
+        val r = card.request
+        insertRequest(position + 1, r.copy(hasSeparator = true, title = r.title?.let { "$it (copy)" }, tags = r.tags.filterNot { it.name == "name" }))
+    }
+
+    override fun remove(card: RequestCard) {
         flushWrite()
-        val item = list.selectedValue ?: return
-        val block = model.blocks.getOrNull(item.blockIndex) ?: return
+        val block = model.blocks.getOrNull(card.blockIndex) ?: return
         val request = block.request ?: return
         // A request at the top of the file may share its block with file-level variables; keep those.
         val replacement = if (!request.hasSeparator && request.prelude.isNotEmpty()) {
@@ -292,11 +300,18 @@ class HttpGuiFileEditor(
         } else {
             ""
         }
-        val position = list.selectedIndex
-        writeDocument("Remove HTTP Request") { document.replaceString(block.startOffset, block.endOffset, replacement) }
+        if (!writeDocument("Remove HTTP Request") { document.replaceString(block.startOffset, block.endOffset, replacement) }) return
         model = HttpFileParser.parse(document.text)
-        updateList()
-        if (listModel.size > 0) list.selectedIndex = position.coerceIn(0, listModel.size - 1)
+        // Drop exactly this card so the others keep their forms and expansion state.
+        cards.remove(card)
+        syncCards(pushToForms = true)
+        rebuildColumn()
+    }
+
+    override fun showInText(card: RequestCard) {
+        flushWrite()
+        val offset = model.blocks.getOrNull(card.blockIndex)?.startOffset ?: 0
+        FileEditorManager.getInstance(project).openTextEditor(OpenFileDescriptor(project, httpFile, offset), true)
     }
 
     private fun newRequest(): HttpRequest {
@@ -308,12 +323,6 @@ class HttpGuiFileEditor(
             headers = listOf(HttpHeader("Accept", "application/json")),
             responseHandler = Script.Inline(TestScripts.generate(TestScripts.DEFAULT_CONDITIONS, "")),
         )
-    }
-
-    private fun openInTextEditor() {
-        flushWrite()
-        val offset = list.selectedValue?.let { model.blocks.getOrNull(it.blockIndex)?.startOffset } ?: 0
-        FileEditorManager.getInstance(project).openTextEditor(OpenFileDescriptor(project, httpFile, offset), true)
     }
 
     // ---- environments and routes --------------------------------------------------------------
@@ -338,10 +347,26 @@ class HttpGuiFileEditor(
                     fillingEnvCombo = false
                 }
                 selectedEnv = wanted
-                form.refreshEnvironment()
+                cards.forEach { it.refreshEnvironment() }
             }
             .submit(AppExecutorUtil.getAppExecutorService())
     }
+
+    private fun scheduleRoutesRefresh() {
+        routesAlarm.cancelAllRequests()
+        routesAlarm.addRequest({ refreshRoutes() }, ROUTES_DELAY_MS)
+    }
+
+    /** Collects routes in the background; URL completion always uses the latest result. */
+    private fun refreshRoutes() {
+        ReadAction.nonBlocking<List<ApiRoute>> { OpenApiRoutes.collect(project) }
+            .inSmartMode(project)
+            .expireWith(this)
+            .finishOnUiThread(ModalityState.any()) { routes = it }
+            .submit(AppExecutorUtil.getAppExecutorService())
+    }
+
+    override fun routes(): List<ApiRoute> = routes
 
     override fun environments(): EnvironmentSet = environments
 
@@ -365,40 +390,6 @@ class HttpGuiFileEditor(
         reloadEnvironments()
     }
 
-    override fun pickRoute(anchor: JComponent, onPicked: (ApiRoute) -> Unit) {
-        ReadAction.nonBlocking<List<ApiRoute>> { OpenApiRoutes.collect(project) }
-            .inSmartMode(project)
-            .expireWith(this)
-            .finishOnUiThread(ModalityState.any()) { routes ->
-                if (routes.isEmpty()) {
-                    JBPopupFactory.getInstance()
-                        .createHtmlTextBalloonBuilder(
-                            "No routes found. Routes come from the Endpoints view and OpenAPI files in the project.",
-                            MessageType.INFO, null,
-                        )
-                        .createBalloon()
-                        .show(RelativePoint.getSouthOf(anchor), Balloon.Position.below)
-                    return@finishOnUiThread
-                }
-                JBPopupFactory.getInstance().createPopupChooserBuilder(routes)
-                    .setTitle("OpenAPI Routes")
-                    .setRenderer(object : ColoredListCellRenderer<ApiRoute>() {
-                        override fun customizeCellRenderer(list: JList<out ApiRoute>, value: ApiRoute?, index: Int, selected: Boolean, hasFocus: Boolean) {
-                            value ?: return
-                            append(value.method.padEnd(7), SimpleTextAttributes(SimpleTextAttributes.STYLE_BOLD, methodColor(value.method)))
-                            append(" " + value.path)
-                            value.summary?.let { append("  $it", SimpleTextAttributes.GRAYED_ATTRIBUTES) }
-                            if (value.source.isNotEmpty()) append("  ${value.source}", SimpleTextAttributes.GRAYED_SMALL_ATTRIBUTES)
-                        }
-                    })
-                    .setNamerForFiltering { "${it.method} ${it.path} ${it.summary ?: ""} ${it.operationId ?: ""}" }
-                    .setItemChosenCallback { onPicked(it) }
-                    .createPopup()
-                    .showUnderneathOf(anchor)
-            }
-            .submit(AppExecutorUtil.getAppExecutorService())
-    }
-
     override fun baseUrlFor(route: ApiRoute): String {
         val server = route.servers.firstOrNull()?.trimEnd('/')
         val absolute = server?.contains("://") == true
@@ -413,15 +404,14 @@ class HttpGuiFileEditor(
 
     private fun baseVariable(): String? {
         val names = variables().filter { it.source != VariableSource.DYNAMIC }.map { it.name }
-        return BASE_URL_VARIABLES.firstOrNull { candidate -> names.any { it.equals(candidate, ignoreCase = true) } }
-            ?.let { candidate -> names.first { it.equals(candidate, ignoreCase = true) } }
+        return BASE_URL_VARIABLES.firstNotNullOfOrNull { candidate -> names.firstOrNull { it.equals(candidate, ignoreCase = true) } }
     }
 
     // ---- FileEditor ---------------------------------------------------------------------------
 
     override fun getComponent(): JComponent = root
 
-    override fun getPreferredFocusedComponent(): JComponent = list
+    override fun getPreferredFocusedComponent(): JComponent? = null
 
     override fun getName(): String = "Designer"
 
@@ -432,10 +422,6 @@ class HttpGuiFileEditor(
     override fun isValid(): Boolean = httpFile.isValid
 
     override fun getFile(): VirtualFile = httpFile
-
-    override fun selectNotify() {
-        reloadNow()
-    }
 
     override fun deselectNotify() {
         flushWrite()
@@ -449,21 +435,31 @@ class HttpGuiFileEditor(
         if (!project.isDisposed) runCatching { flushWrite() }
     }
 
+    /** Vertical stack that always matches the viewport width, so cards never scroll sideways. */
+    private class ColumnPanel : JPanel(VerticalLayout(JBUI.scale(4))), Scrollable {
+        init {
+            border = JBUI.Borders.empty(8)
+        }
+
+        override fun getPreferredScrollableViewportSize(): Dimension = preferredSize
+        override fun getScrollableUnitIncrement(visibleRect: Rectangle, orientation: Int, direction: Int) = JBUI.scale(16)
+        override fun getScrollableBlockIncrement(visibleRect: Rectangle, orientation: Int, direction: Int) = visibleRect.height
+        override fun getScrollableTracksViewportWidth() = true
+        override fun getScrollableTracksViewportHeight() = false
+    }
+
     companion object {
         private const val ENV_KEY = "httpgui.selectedEnvironment"
         private const val COMMAND_GROUP = "HttpRequestDesigner"
         private const val RELOAD_DELAY_MS = 250
         private const val WRITE_DELAY_MS = 200
         private const val ENV_DELAY_MS = 500
+        private const val ROUTES_DELAY_MS = 1500
 
+        /** Files with at most this many requests open with every card expanded. */
+        private const val EXPAND_ALL_LIMIT = 8
+
+        private val SPEC_EXTENSIONS = setOf("yaml", "yml", "json")
         private val BASE_URL_VARIABLES = listOf("baseUrl", "base_url", "baseURL", "host", "url", "apiUrl", "server")
-
-        fun methodColor(method: String): Color = when (method.uppercase()) {
-            "GET" -> JBUI.CurrentTheme.Link.Foreground.ENABLED
-            "POST" -> JBColor(0x2E7D32, 0x7CC47F)
-            "PUT", "PATCH" -> JBColor(0xB26A00, 0xE0A458)
-            "DELETE" -> JBColor(0xC62828, 0xE57373)
-            else -> JBColor(0x6A1B9A, 0xB39DDB)
-        }
     }
 }

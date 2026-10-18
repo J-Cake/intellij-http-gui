@@ -1,6 +1,5 @@
 package dev.jcake.httpgui.ui
 
-import com.intellij.icons.AllIcons
 import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.ComboBox
@@ -27,6 +26,7 @@ import dev.jcake.httpgui.core.VariableInfo
 import dev.jcake.httpgui.core.Variables
 import java.awt.BorderLayout
 import java.awt.CardLayout
+import java.awt.Dimension
 import java.awt.FlowLayout
 import java.awt.GridBagConstraints
 import java.awt.GridBagLayout
@@ -45,7 +45,8 @@ interface RequestEditorContext {
     fun selectedEnvironment(): String?
     fun resolvedValues(): Map<String, String?>
     fun saveOAuthConfig(environment: String, id: String, publicValues: Map<String, Any?>, privateValues: Map<String, Any?>)
-    fun pickRoute(anchor: JComponent, onPicked: (ApiRoute) -> Unit)
+    /** Routes from the Endpoints view and OpenAPI files, as last collected. */
+    fun routes(): List<ApiRoute>
     fun baseUrlFor(route: ApiRoute): String
 }
 
@@ -68,10 +69,10 @@ class RequestEditorPanel(
         addActionListener { onMethodEdited() }
         (editor.editorComponent as? JTextField)?.document?.addDocumentListener(swingListener { onMethodEdited() })
     }
-    private val urlField = VariableTextField(project, ctx::variables) { text -> update(URL) { it.copy(url = text.replace("\n", "")) } }
-    private val routeButton = JButton("Routes", AllIcons.Actions.Find).apply {
-        toolTipText = "Prefill from a route detected in the OpenAPI / Endpoints view"
-        addActionListener { ctx.pickRoute(this) { route -> applyRoute(route) } }
+    private val urlField = UrlTextField(project, ctx::variables, ::routeSuggestions, ::applyRoute) { text ->
+        update(URL) { it.copy(url = text.replace("\n", "")) }
+    }.apply {
+        toolTipText = "Type a path or press Ctrl+Space for OpenAPI routes; type {{ for variables"
     }
     private val resolvedLabel = JBLabel().apply { foreground = UIUtil.getContextHelpForeground() }
 
@@ -156,9 +157,7 @@ class RequestEditorPanel(
             add(methodCombo, c)
             c.gridx = 1; c.weightx = 1.0
             add(urlField, c)
-            c.gridx = 2; c.weightx = 0.0
-            add(routeButton, c)
-            c.gridy = 1; c.gridx = 1; c.gridwidth = 2
+            c.gridy = 1; c.gridx = 1
             add(resolvedLabel, c)
         }
         val identity = JPanel(GridBagLayout()).apply {
@@ -208,7 +207,10 @@ class RequestEditorPanel(
                 add(identity, BorderLayout.NORTH)
                 add(requestLine, BorderLayout.CENTER)
             }, BorderLayout.NORTH)
-            add(tabs, BorderLayout.CENTER)
+            // Fixed height so the form can live in the designer's scrolling column of requests.
+            add(object : JPanel(BorderLayout()) {
+                override fun getPreferredSize(): Dimension = Dimension(super.getPreferredSize().width, JBUI.scale(TABS_HEIGHT))
+            }.apply { add(tabs, BorderLayout.CENTER) }, BorderLayout.CENTER)
         }
     }
 
@@ -335,6 +337,10 @@ class RequestEditorPanel(
         update(CONTENT_TYPE) { it.withHeader("Content-Type", value.ifEmpty { null }) }
     }
 
+    private fun routeSuggestions(): List<UrlSuggestion.Route> = ctx.routes().map { route ->
+        UrlSuggestion.Route(route, Urls.split(route.toRequest(ctx.baseUrlFor(route)).url).first)
+    }
+
     private fun applyRoute(route: ApiRoute) {
         val base = ctx.baseUrlFor(route)
         val prefilled = route.toRequest(base)
@@ -373,6 +379,7 @@ class RequestEditorPanel(
     }
 
     companion object {
+        private const val TABS_HEIGHT = 340
         private const val EMPTY_CARD = "empty"
         private const val EDITOR_CARD = "editor"
 
