@@ -6,14 +6,14 @@ top-right corner switch between text only, split and designer only (like the Mar
 same document: changes in the designer rewrite only the affected request, and changes made anywhere else (the text
 editor, VCS, external tools) show up in the designer live. Requests are still run from the text editor's gutter.
 
-The designer is laid out like a notebook: every request in the file is a card in one scrolling column, with
-*+ Add request* links between them.
+The designer is laid out like a notebook: every request in the file is a collapsible section in one scrolling
+column, with its actions (add below, duplicate, show in text, delete) in the section's toolbar.
 
 ## Features
 
 | | |
 |---|---|
-| **Requests** | One card per request (add anywhere, duplicate, delete, collapse, jump to the text). Method picker with the standard methods (plus `GRAPHQL` / `WEBSOCKET`) that also accepts any custom method. URL, query parameter, header and body editors. |
+| **Requests** | One section per request (add anywhere, duplicate, delete, collapse, jump to the text). Method picker with the standard methods (plus `GRAPHQL` / `WEBSOCKET`) that also accepts any custom method. URL, query parameter, header and body editors. |
 | **OpenAPI routes** | Routes are offered as completions in the URL field (type a path such as `/pe`, a method, or press Ctrl+Space). They come from the IDE's **Endpoints** view (`com.intellij.microservices.endpointsProvider`, which the OpenAPI/Swagger and framework plugins feed) and from OpenAPI/Swagger files in the project, and are refreshed when those files change. Picking a route fills in method, path (`{id}` → `{{id}}`), query parameters, content type, an example body and a default status test. |
 | **Environment completion** | Type `{{` in the URL, header and parameter fields to complete variables from `http-client.env.json` / `http-client.private.env.json` (including `$shared`), in-file `@variables` and the built-in dynamic variables (`$uuid`, `$timestamp`, `$random.*`, `$auth.token(...)`, ...). The selected environment shows a resolved preview of the URL and flags undefined variables. Environment files are reloaded when they change. |
 | **Auth dashboard** | No auth, Basic, Digest, Bearer, API key (header or query), OAuth 2.0 and custom `Authorization` values. OAuth 2.0 uses `{{$auth.token("id")}}` and can create or edit the `Security.Auth` configuration in the environment files (secrets go to the private file). |
@@ -27,6 +27,18 @@ The designer is laid out like a notebook: every request in the file is a card in
 - `src/` — the IntelliJ plugin: `HttpGuiEditorProvider` (text editor + designer split), `HttpGuiFileEditor` (the
   notebook, document sync and live reload), `ui/` (request cards and forms) and `services/` (environment files, routes).
 - `samples/` — an `.http` file, environment file and OpenAPI spec to try the designer with.
+
+## Installing
+
+Download `intellij-http-gui-<version>.zip` from the [latest release](https://github.com/J-Cake/intellij-http-gui/releases/latest)
+and install it with *Settings → Plugins → ⚙ → Install Plugin from Disk…* (don't unpack the ZIP).
+
+To get updates automatically, add this custom plugin repository under *Settings → Plugins → ⚙ → Manage Plugin
+Repositories…* and install "HTTP Request Designer" from the Marketplace tab:
+
+```
+https://github.com/J-Cake/intellij-http-gui/releases/latest/download/updatePlugins.xml
+```
 
 ## Building
 
@@ -43,5 +55,10 @@ The IDE version used for compiling is `platformVersion` in `gradle.properties`; 
 pass `-PplatformLocalPath=/path/to/idea`. The HTTP Client itself is part of IntelliJ IDEA Ultimate (and other paid
 JetBrains IDEs), so that's where requests can be run; the designer doesn't depend on it.
 
-GitHub Actions (`.github/workflows/build.yml`) runs the unit tests and builds the plugin ZIP on pushes to `master`
-and on pull requests; the ZIP is attached to the run as an artifact.
+## Continuous integration and releases
+
+- `.github/workflows/build.yml` runs the unit tests and builds the plugin ZIP on pushes to `master` and on pull
+  requests; the ZIP is attached to the run as an artifact.
+- `.github/workflows/release.yml` publishes a release. Push a version tag (`git tag v0.2.0 && git push origin v0.2.0`)
+  or run the workflow manually with a version. The plugin is built with that version and the release gets the ZIP
+  plus the `updatePlugins.xml` used by the custom plugin repository above.

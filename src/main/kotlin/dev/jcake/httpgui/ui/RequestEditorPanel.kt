@@ -1,18 +1,21 @@
 package dev.jcake.httpgui.ui
 
+import com.intellij.openapi.Disposable
 import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.ComboBox
 import com.intellij.openapi.ui.popup.JBPopupFactory
 import com.intellij.ui.SimpleListCellRenderer
 import com.intellij.ui.components.JBCheckBox
+import com.intellij.ui.tabs.JBTabs
+import com.intellij.ui.tabs.JBTabsFactory
+import com.intellij.ui.tabs.TabInfo
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBTextField
 import com.intellij.ui.components.fields.ExtendableTextField
 import com.intellij.util.ui.FormBuilder
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
-import com.intellij.util.ui.WrapLayout
 import dev.jcake.httpgui.core.ApiRoute
 import dev.jcake.httpgui.core.AuthCodec
 import dev.jcake.httpgui.core.EnvironmentSet
@@ -28,14 +31,11 @@ import java.awt.BorderLayout
 import java.awt.CardLayout
 import java.awt.Dimension
 import java.awt.FlowLayout
-import java.awt.Font
 import java.awt.GridBagConstraints
 import java.awt.GridBagLayout
 import javax.swing.JButton
 import javax.swing.JComponent
 import javax.swing.JPanel
-import javax.swing.ButtonGroup
-import javax.swing.JToggleButton
 import javax.swing.JTextField
 import javax.swing.event.DocumentEvent
 import javax.swing.event.DocumentListener
@@ -56,6 +56,7 @@ interface RequestEditorContext {
 /** Form editing a single [HttpRequest]; every change is reported through [onChanged]. */
 class RequestEditorPanel(
     private val ctx: RequestEditorContext,
+    parentDisposable: Disposable,
     private val onChanged: (HttpRequest) -> Unit,
 ) : JPanel(CardLayout()) {
 
@@ -142,39 +143,11 @@ class RequestEditorPanel(
         addActionListener { update(OPTIONS) { r -> r.copy(httpVersion = (selectedItem as? String)?.ifEmpty { null }) } }
     }
 
-    /** Section switcher: a wrapping strip of toggle buttons (stays readable when the designer is narrow). */
-    private inner class Sections : JPanel(BorderLayout()) {
-        private val cards = CardLayout()
-        private val content = JPanel(cards)
-        private val strip = JPanel(WrapLayout(FlowLayout.LEFT, JBUI.scale(2), JBUI.scale(2)))
-        private val group = ButtonGroup()
-
-        init {
-            add(strip, BorderLayout.NORTH)
-            add(content, BorderLayout.CENTER)
-        }
-
-        fun addTab(title: String, component: JComponent) {
-            content.add(component, title)
-            val button = JToggleButton(title).apply {
-                isSelected = group.buttonCount == 0
-                addActionListener {
-                    cards.show(content, title)
-                    updateStyles()
-                }
-            }
-            group.add(button)
-            strip.add(button)
-            updateStyles()
-        }
-
-        /** Selected toggle buttons barely differ in the IntelliJ themes; bold makes the current section obvious. */
-        private fun updateStyles() {
-            group.elements.asSequence().forEach { it.font = it.font.deriveFont(if (it.isSelected) Font.BOLD else Font.PLAIN) }
-        }
+    /** The platform's own tabs (as in the Run / Services tool windows): one row, overflow in a dropdown. */
+    private val tabs: JBTabs = JBTabsFactory.createTabs(project, parentDisposable).apply {
+        presentation.setSingleRow(true)
+        presentation.setTabDraggingEnabled(false)
     }
-
-    private val tabs = Sections()
 
     init {
         add(JBLabel("Select a request on the left, or add a new one.", UIUtil.ComponentStyle.LARGE).apply {
@@ -228,28 +201,30 @@ class RequestEditorPanel(
         }.panel
         val optionsTab = JPanel(BorderLayout()).apply { add(options, BorderLayout.NORTH); border = JBUI.Borders.empty(8) }
 
-        tabs.addTab("Params", paramsEditor.withBorder())
-        tabs.addTab("Headers", headersEditor.withBorder())
-        tabs.addTab("Body", bodyTab)
-        tabs.addTab("Auth", authPanel.withBorder())
-        tabs.addTab("Tests", testsPanel)
-        tabs.addTab("Pre-request", preTab)
-        tabs.addTab("Options", optionsTab)
+        listOf(
+            "Params" to paramsEditor.withBorder(),
+            "Headers" to headersEditor.withBorder(),
+            "Body" to bodyTab.withBorder(),
+            "Auth" to authPanel.withBorder(),
+            "Tests" to testsPanel.withBorder(),
+            "Pre-request" to preTab.withBorder(),
+            "Options" to optionsTab,
+        ).forEach { (title, component) -> tabs.addTab(TabInfo(component).setText(title)) }
 
         return JPanel(BorderLayout()).apply {
-            border = JBUI.Borders.empty(8)
             add(JPanel(BorderLayout()).apply {
+                border = JBUI.Borders.emptyBottom(6)
                 add(identity, BorderLayout.NORTH)
                 add(requestLine, BorderLayout.CENTER)
             }, BorderLayout.NORTH)
-            // Fixed height so the form can live in the designer's scrolling column of requests.
+            // Fixed height so the form can live in the designer's scrolling list of requests.
             add(object : JPanel(BorderLayout()) {
                 override fun getPreferredSize(): Dimension = Dimension(super.getPreferredSize().width, JBUI.scale(TABS_HEIGHT))
-            }.apply { add(tabs, BorderLayout.CENTER) }, BorderLayout.CENTER)
+            }.apply { add(tabs.component, BorderLayout.CENTER) }, BorderLayout.CENTER)
         }
     }
 
-    private fun JComponent.withBorder(): JComponent = apply { border = JBUI.Borders.empty(8) }
+    private fun JComponent.withBorder(): JComponent = apply { border = JBUI.Borders.empty(8, 0, 0, 0) }
 
     private fun showCard(name: String) = (layout as CardLayout).show(this, name)
 

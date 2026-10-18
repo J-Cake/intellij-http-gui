@@ -2,6 +2,15 @@ package dev.jcake.httpgui
 
 import com.intellij.icons.AllIcons
 import com.intellij.ide.util.PropertiesComponent
+import com.intellij.openapi.Disposable
+import com.intellij.openapi.actionSystem.ActionManager
+import com.intellij.openapi.actionSystem.ActionUpdateThread
+import com.intellij.openapi.actionSystem.AnActionEvent
+import com.intellij.openapi.actionSystem.DataContext
+import com.intellij.openapi.actionSystem.DefaultActionGroup
+import com.intellij.openapi.actionSystem.Separator
+import com.intellij.openapi.actionSystem.ToggleAction
+import com.intellij.openapi.actionSystem.ex.ComboBoxAction
 import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.command.WriteCommandAction
@@ -14,14 +23,16 @@ import com.intellij.openapi.fileEditor.FileEditor
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileEditor.FileEditorState
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
+import com.intellij.openapi.project.DumbAware
+import com.intellij.openapi.project.DumbAwareAction
 import com.intellij.openapi.project.Project
-import com.intellij.openapi.ui.ComboBox
+import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.util.UserDataHolderBase
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.vfs.VirtualFileManager
 import com.intellij.openapi.vfs.newvfs.BulkFileListener
 import com.intellij.openapi.vfs.newvfs.events.VFileEvent
-import com.intellij.ui.SimpleListCellRenderer
+import com.intellij.ui.JBColor
 import com.intellij.ui.components.ActionLink
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBScrollPane
@@ -30,7 +41,6 @@ import com.intellij.util.Alarm
 import com.intellij.util.concurrency.AppExecutorUtil
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
-import com.intellij.util.ui.WrapLayout
 import dev.jcake.httpgui.core.ApiRoute
 import dev.jcake.httpgui.core.DYNAMIC_VARIABLES
 import dev.jcake.httpgui.core.EnvironmentSet
@@ -49,19 +59,21 @@ import dev.jcake.httpgui.ui.RequestCard
 import dev.jcake.httpgui.ui.RequestCardHost
 import dev.jcake.httpgui.ui.RequestEditorContext
 import java.awt.BorderLayout
+import java.awt.Component
 import java.awt.Dimension
 import java.awt.FlowLayout
+import java.awt.KeyboardFocusManager
 import java.awt.Rectangle
 import java.beans.PropertyChangeListener
-import javax.swing.JButton
 import javax.swing.JComponent
 import javax.swing.JPanel
+import javax.swing.LayoutFocusTraversalPolicy
 import javax.swing.Scrollable
-import javax.swing.SwingConstants
+import javax.swing.SwingUtilities
 
 /**
- * Graphical editor for an `.http` file, laid out like a notebook: every request is a card in one
- * scrolling column. It works on the same [Document] as the text editor: GUI edits rewrite only the
+ * Graphical editor for an `.http` file, laid out like a notebook: every request is a collapsible
+ * section in one scrolling column. It works on the same [Document] as the text editor: GUI edits rewrite only the
  * affected request block, and document changes from any other source (the text editor, VCS,
  * external tools) are re-parsed and shown live.
  */
@@ -79,7 +91,6 @@ class HttpGuiFileEditor(
     private var routes: List<ApiRoute> = emptyList()
 
     private var ownChange = false
-    private var fillingEnvCombo = false
     private var pendingWrite: Pair<Int, HttpRequest>? = null
 
     private val reloadAlarm = Alarm(Alarm.ThreadToUse.SWING_THREAD, this)
@@ -89,47 +100,54 @@ class HttpGuiFileEditor(
 
     private val cards = mutableListOf<RequestCard>()
     private val column = ColumnPanel()
-    private val envCombo = ComboBox<String>()
     private val root: JComponent
 
     override val context: RequestEditorContext get() = this
+    override val disposable: Disposable get() = this
 
     init {
-        envCombo.renderer = SimpleListCellRenderer.create<String>("") { it.ifEmpty { "No environment" } }
-        envCombo.addActionListener {
-            if (fillingEnvCombo) return@addActionListener
-            val env = (envCombo.selectedItem as? String)?.ifEmpty { null }
-            if (env != selectedEnv) {
-                selectedEnv = env
-                PropertiesComponent.getInstance(project).setValue(ENV_KEY, env)
-                cards.forEach { it.refreshEnvironment() }
-            }
+        val actions = DefaultActionGroup(
+            EnvironmentAction(),
+            Separator.getInstance(),
+            DumbAwareAction.create("Add Request", AllIcons.General.Add) { insertRequest(cards.size, newRequest()) },
+            DumbAwareAction.create("Expand All", AllIcons.Actions.Expandall) { cards.forEach { it.setExpanded(true) } },
+            DumbAwareAction.create("Collapse All", AllIcons.Actions.Collapseall) { cards.forEach { it.setExpanded(false) } },
+            Separator.getInstance(),
+            DumbAwareAction.create("Reload File, Environments and Routes", AllIcons.Actions.Refresh) {
+                reloadNow(pushToForms = true)
+                reloadEnvironments()
+                refreshRoutes()
+            },
+        )
+        val toolbar = ActionManager.getInstance().createActionToolbar(TOOLBAR_PLACE, actions, true).apply {
+            targetComponent = column
+            component.border = JBUI.Borders.compound(JBUI.Borders.customLineBottom(JBColor.border()), JBUI.Borders.empty(1, 4))
         }
 
-        val toolbar = JPanel(WrapLayout(FlowLayout.LEFT, JBUI.scale(6), JBUI.scale(2))).apply {
-            add(JBLabel("Environment:"))
-            add(envCombo)
-            add(JButton("Reload", AllIcons.Actions.Refresh).apply {
-                toolTipText = "Re-read the file, environment files and OpenAPI routes"
-                addActionListener {
-                    reloadNow(pushToForms = true)
-                    reloadEnvironments()
-                    refreshRoutes()
-                }
-            })
-            add(JButton("Expand All", AllIcons.Actions.Expandall).apply { addActionListener { cards.forEach { it.setExpanded(true) } } })
-            add(JButton("Collapse All", AllIcons.Actions.Collapseall).apply { addActionListener { cards.forEach { it.setExpanded(false) } } })
+        val scrollPane = JBScrollPane(column).apply {
+            border = JBUI.Borders.empty()
+            verticalScrollBar.unitIncrement = JBUI.scale(16)
         }
-
         root = JPanel(BorderLayout()).apply {
             // Let the split editor's divider decide the width instead of the toolbar's preferred size.
             minimumSize = Dimension(JBUI.scale(200), 0)
-            add(toolbar, BorderLayout.NORTH)
-            add(JBScrollPane(column).apply {
-                border = JBUI.Borders.empty()
-                verticalScrollBar.unitIncrement = JBUI.scale(16)
-            }, BorderLayout.CENTER)
+            // Tab / Shift+Tab cycle through the designer's fields instead of escaping into the text editor.
+            isFocusCycleRoot = true
+            focusTraversalPolicy = LayoutFocusTraversalPolicy()
+            add(toolbar.component, BorderLayout.NORTH)
+            add(scrollPane, BorderLayout.CENTER)
         }
+
+        // Keep the focused field visible while tabbing through a long file.
+        val focusListener = PropertyChangeListener { event ->
+            val owner = event.newValue as? Component ?: return@PropertyChangeListener
+            if (!SwingUtilities.isDescendingFrom(owner, column)) return@PropertyChangeListener
+            val bounds = SwingUtilities.convertRectangle(owner.parent, owner.bounds, column)
+            column.scrollRectToVisible(bounds)
+        }
+        val focusManager = KeyboardFocusManager.getCurrentKeyboardFocusManager()
+        focusManager.addPropertyChangeListener("focusOwner", focusListener)
+        Disposer.register(this) { focusManager.removePropertyChangeListener("focusOwner", focusListener) }
 
         document.addDocumentListener(object : DocumentListener {
             override fun documentChanged(event: DocumentEvent) {
@@ -179,7 +197,7 @@ class HttpGuiFileEditor(
         val requests = model.blocks.mapIndexedNotNull { i, b -> b.request?.let { i to it } }
         var structureChanged = false
         while (cards.size > requests.size) {
-            cards.removeAt(cards.lastIndex)
+            Disposer.dispose(cards.removeAt(cards.lastIndex).disposable)
             structureChanged = true
         }
         requests.forEachIndexed { position, (blockIndex, request) ->
@@ -197,24 +215,19 @@ class HttpGuiFileEditor(
     private fun rebuildColumn() {
         column.removeAll()
         if (cards.isEmpty()) {
-            column.add(JBLabel("This file has no requests yet.", UIUtil.ComponentStyle.LARGE).apply {
-                foreground = UIUtil.getContextHelpForeground()
-                horizontalAlignment = SwingConstants.CENTER
+            column.add(JPanel(FlowLayout(FlowLayout.CENTER, JBUI.scale(4), 0)).apply {
+                isOpaque = false
                 border = JBUI.Borders.empty(24)
+                add(JBLabel("No requests yet.").apply { foreground = UIUtil.getContextHelpForeground() })
+                add(ActionLink("Add request") { insertRequest(0, newRequest()) })
             })
         }
-        cards.forEachIndexed { position, card ->
-            column.add(addLink(position))
+        cards.forEachIndexed { index, card ->
+            card.showSeparator = index > 0
             column.add(card)
         }
-        column.add(addLink(cards.size))
         column.revalidate()
         column.repaint()
-    }
-
-    private fun addLink(position: Int): JComponent = JPanel(FlowLayout(FlowLayout.CENTER, 0, 0)).apply {
-        isOpaque = false
-        add(ActionLink("+ Add request") { insertRequest(position, newRequest()) })
     }
 
     // ---- GUI -> document ----------------------------------------------------------------------
@@ -287,6 +300,10 @@ class HttpGuiFileEditor(
         column.scrollRectToVisible(card.bounds)
     }
 
+    override fun insertBelow(card: RequestCard) {
+        insertRequest(cards.indexOf(card) + 1, newRequest())
+    }
+
     override fun duplicate(card: RequestCard) {
         val position = cards.indexOf(card)
         val r = card.request
@@ -305,8 +322,9 @@ class HttpGuiFileEditor(
         }
         if (!writeDocument("Remove HTTP Request") { document.replaceString(block.startOffset, block.endOffset, replacement) }) return
         model = HttpFileParser.parse(document.text)
-        // Drop exactly this card so the others keep their forms and expansion state.
+        // Drop exactly this section so the others keep their forms and expansion state.
         cards.remove(card)
+        Disposer.dispose(card.disposable)
         syncCards(pushToForms = true)
         rebuildColumn()
     }
@@ -340,16 +358,7 @@ class HttpGuiFileEditor(
             .expireWith(this)
             .finishOnUiThread(ModalityState.any()) { loaded ->
                 environments = loaded
-                val wanted = selectedEnv?.takeIf { it in loaded.environmentNames }
-                fillingEnvCombo = true
-                try {
-                    envCombo.removeAllItems()
-                    (listOf("") + loaded.environmentNames).forEach { envCombo.addItem(it) }
-                    envCombo.selectedItem = wanted ?: ""
-                } finally {
-                    fillingEnvCombo = false
-                }
-                selectedEnv = wanted
+                selectedEnv = selectedEnv?.takeIf { it in loaded.environmentNames }
                 cards.forEach { it.refreshEnvironment() }
             }
             .submit(AppExecutorUtil.getAppExecutorService())
@@ -438,10 +447,39 @@ class HttpGuiFileEditor(
         if (!project.isDisposed) runCatching { flushWrite() }
     }
 
+    private fun selectEnvironment(env: String?) {
+        if (env == selectedEnv) return
+        selectedEnv = env
+        PropertiesComponent.getInstance(project).setValue(ENV_KEY, env)
+        cards.forEach { it.refreshEnvironment() }
+    }
+
+    /** Environment picker in the toolbar, like the HTTP Client's own "Run with" selector. */
+    private inner class EnvironmentAction : ComboBoxAction(), DumbAware {
+        override fun getActionUpdateThread() = ActionUpdateThread.EDT
+
+        override fun update(e: AnActionEvent) {
+            e.presentation.text = selectedEnv ?: "No Environment"
+            e.presentation.description = "Environment used for variable completion and URL previews"
+        }
+
+        override fun createPopupActionGroup(button: JComponent, dataContext: DataContext): DefaultActionGroup = DefaultActionGroup().apply {
+            add(choice(null))
+            if (environments.environmentNames.isNotEmpty()) addSeparator()
+            environments.environmentNames.forEach { add(choice(it)) }
+        }
+
+        private fun choice(env: String?) = object : ToggleAction(env ?: "No Environment"), DumbAware {
+            override fun getActionUpdateThread() = ActionUpdateThread.EDT
+            override fun isSelected(e: AnActionEvent) = selectedEnv == env
+            override fun setSelected(e: AnActionEvent, state: Boolean) = selectEnvironment(env)
+        }
+    }
+
     /** Vertical stack that always matches the viewport width, so cards never scroll sideways. */
-    private class ColumnPanel : JPanel(VerticalLayout(JBUI.scale(4))), Scrollable {
+    private class ColumnPanel : JPanel(VerticalLayout(0)), Scrollable {
         init {
-            border = JBUI.Borders.empty(8)
+            border = JBUI.Borders.empty(4, 12, 12, 8)
         }
 
         override fun getPreferredScrollableViewportSize(): Dimension = preferredSize
@@ -453,6 +491,7 @@ class HttpGuiFileEditor(
 
     companion object {
         private const val ENV_KEY = "httpgui.selectedEnvironment"
+        private const val TOOLBAR_PLACE = "HttpRequestDesigner.Toolbar"
         private const val COMMAND_GROUP = "HttpRequestDesigner"
         private const val RELOAD_DELAY_MS = 250
         private const val WRITE_DELAY_MS = 200
