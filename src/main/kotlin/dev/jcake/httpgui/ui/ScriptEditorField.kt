@@ -52,12 +52,15 @@ class ScriptEditorField private constructor(
         })
     }
 
-    /** Ties the script to [element] (inside the handler block in the `.http` file), or detaches it. */
+    /**
+     * Ties the script to [element] (inside the handler block in the `.http` file). Null keeps the
+     * previous context: the block may just not be locatable right now, and a stale pointer is harmless.
+     */
     fun setContext(element: PsiElement?) {
         val file = psiFile ?: return
-        if (element == context) return
+        if (element == null || element == context) return
         context = element
-        file.putUserData(FileContextUtil.INJECTED_IN_ELEMENT, element?.let { pointers.createSmartPsiElementPointer(it) })
+        file.putUserData(FileContextUtil.INJECTED_IN_ELEMENT, pointers.createSmartPsiElementPointer(element))
     }
 
     fun setTextSilently(value: String) {

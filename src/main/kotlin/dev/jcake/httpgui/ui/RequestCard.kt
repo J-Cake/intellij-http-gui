@@ -138,6 +138,10 @@ class RequestCard(
         if (pushToForm && formRequest != request) form?.setRequest(request) else form?.refreshScriptContext()
     }
 
+    fun refreshScriptContext() {
+        form?.refreshScriptContext()
+    }
+
     fun refreshEnvironment() {
         form?.refreshEnvironment()
     }

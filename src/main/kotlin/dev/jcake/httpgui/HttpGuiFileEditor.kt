@@ -423,7 +423,11 @@ class HttpGuiFileEditor(
         val start = (if (preRequest) PRE_REQUEST_SCRIPT else RESPONSE_HANDLER_SCRIPT).find(block.text) ?: return null
         val offset = block.startOffset + start.range.last + 1
         val documents = PsiDocumentManager.getInstance(project)
-        documents.commitDocument(document)
+        if (!documents.isCommitted(document)) {
+            // Committing here may be write-unsafe (e.g. while the editor is created); look again once the PSI is current.
+            documents.performForCommittedDocument(document) { cards.forEach { it.refreshScriptContext() } }
+            return null
+        }
         val file = documents.getPsiFile(document) ?: return null
         val leaf = file.findElementAt(offset) ?: return null
         // The JavaScript is injected into this host; anything under the handler would do, the host is most precise.
