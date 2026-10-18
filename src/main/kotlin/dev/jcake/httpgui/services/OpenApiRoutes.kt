@@ -66,7 +66,7 @@ object OpenApiRoutes {
         return providers.flatMap { provider ->
             ProgressManager.checkCanceled()
             try {
-                routesOf(project, provider)
+                routesOf(project, provider).also { LOG.debug("${provider.javaClass.name}: ${it.size} routes") }
             } catch (e: Exception) {
                 rethrowIfCanceled(e)
                 LOG.debug("Could not read endpoints from ${provider.javaClass.name}", e)
