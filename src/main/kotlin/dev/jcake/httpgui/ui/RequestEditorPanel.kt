@@ -28,6 +28,7 @@ import java.awt.BorderLayout
 import java.awt.CardLayout
 import java.awt.Dimension
 import java.awt.FlowLayout
+import java.awt.Font
 import java.awt.GridBagConstraints
 import java.awt.GridBagLayout
 import javax.swing.JButton
@@ -157,10 +158,19 @@ class RequestEditorPanel(
             content.add(component, title)
             val button = JToggleButton(title).apply {
                 isSelected = group.buttonCount == 0
-                addActionListener { cards.show(content, title) }
+                addActionListener {
+                    cards.show(content, title)
+                    updateStyles()
+                }
             }
             group.add(button)
             strip.add(button)
+            updateStyles()
+        }
+
+        /** Selected toggle buttons barely differ in the IntelliJ themes; bold makes the current section obvious. */
+        private fun updateStyles() {
+            group.elements.asSequence().forEach { it.font = it.font.deriveFont(if (it.isSelected) Font.BOLD else Font.PLAIN) }
         }
     }
 
@@ -409,7 +419,7 @@ class RequestEditorPanel(
     }
 
     companion object {
-        private const val TABS_HEIGHT = 340
+        private const val TABS_HEIGHT = 420
         private const val EMPTY_CARD = "empty"
         private const val EDITOR_CARD = "editor"
 
