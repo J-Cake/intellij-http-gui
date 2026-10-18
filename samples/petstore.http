@@ -1,0 +1,29 @@
+@version = v1
+
+### List pets
+# @name listPets
+GET {{host}}/{{version}}/pets
+    ?limit=20
+    &status=available
+Accept: application/json
+Authorization: Bearer {{$auth.token("petstore")}}
+
+> {%
+    client.test("Status equals 200", function () { client.assert(response.status == 200, "Failed: Status equals 200"); });
+    client.test("Content type contains json", function () { client.assert(String(response.contentType.mimeType).includes("json"), "Failed: Content type contains json"); });
+    client.global.set("firstPetId", jsonPath(response.body, "$[0].id"));
+%}
+
+### Create pet
+POST {{host}}/{{version}}/pets
+Content-Type: application/json
+X-API-Key: {{apiKey}}
+
+{
+  "name": "Rex",
+  "tag": "dog"
+}
+
+> {%
+    client.test("Status equals 201", function () { client.assert(response.status == 201, "Failed: Status equals 201"); });
+%}

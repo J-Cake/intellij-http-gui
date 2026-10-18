@@ -1,0 +1,23 @@
+<idea-plugin>
+    <id>dev.jcake.httpgui</id>
+    <name>HTTP Request Designer</name>
+    <vendor>J-Cake</vendor>
+
+    <description><![CDATA[
+    A graphical editor for IntelliJ HTTP Client files (<code>.http</code> / <code>.rest</code>).
+    <ul>
+      <li>Build requests with standard or custom HTTP methods, query parameters, headers and bodies</li>
+      <li>Prefill requests from routes detected in the Endpoints (OpenAPI) view and OpenAPI files</li>
+      <li><code>{{variable}}</code> completion from <code>http-client.env.json</code> environments, in-file variables and dynamic variables</li>
+      <li>Authentication dashboard: Basic, Digest, Bearer, API key and OAuth 2.0 (<code>Security.Auth</code>)</li>
+      <li>Test builder that generates <code>client.test(...)</code> response handler checks</li>
+    </ul>
+    The designer edits the same document as the text editor, so changes show up live in both directions.
+    ]]></description>
+
+    <depends>com.intellij.modules.platform</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <fileEditorProvider implementation="dev.jcake.httpgui.HttpGuiEditorProvider"/>
+    </extensions>
+</idea-plugin>
