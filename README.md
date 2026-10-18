@@ -1,5 +1,7 @@
 # intellij-http-gui
 
+> [!info] This plugin was written 100% by Claude on a rainy Sunday evening. It works on my machine, and you're welcome to use it as well, but don't expect me to maintain it. Feel free to report or even fix bugs you find though. 
+
 **HTTP Request Designer** is an IntelliJ plugin that adds a graphical designer to IntelliJ HTTP Client files
 (`.http` / `.rest`). The file opens with the text editor and the designer side by side; the buttons in the editor's
 top-right corner switch between text only, split and designer only (like the Markdown editor). Both halves edit the
