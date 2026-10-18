@@ -98,6 +98,8 @@ class CodeEditorField(
     private var silent = false
 
     init {
+        // Code is shown in the editor's monospace font, not the UI font.
+        setFontInheritedFromLAF(false)
         addDocumentListener(object : DocumentListener {
             override fun documentChanged(event: DocumentEvent) {
                 // Let the enclosing request section grow or shrink with the text.

@@ -31,6 +31,9 @@ import java.lang.reflect.Proxy
 object OpenApiRoutes {
     private val LOG = logger<OpenApiRoutes>()
     private const val ENDPOINTS_EP = "com.intellij.microservices.endpointsProvider"
+
+    /** How the Endpoints view splits a project into filterable parts (modules, Cargo packages, ...). */
+    private const val PROJECT_MODEL_EP = "com.intellij.microservices.endpointsProjectModel"
     private const val MAX_SPEC_SIZE = 4L * 1024 * 1024
 
     fun collect(project: Project): List<ApiRoute> {
@@ -65,8 +68,7 @@ object OpenApiRoutes {
             try {
                 routesOf(project, provider)
             } catch (e: Exception) {
-                if (e is ProcessCanceledException) throw e
-                (e as? InvocationTargetException)?.targetException?.let { if (it is ProcessCanceledException) throw it }
+                rethrowIfCanceled(e)
                 LOG.debug("Could not read endpoints from ${provider.javaClass.name}", e)
                 emptyList()
             }
@@ -101,10 +103,16 @@ object OpenApiRoutes {
         return routes
     }
 
-    /** One filter covering the project, or one per module, depending on what the IDE offers. */
+    /**
+     * The filters the Endpoints view itself would query with. They come from the IDE's project models,
+     * since some providers only understand their own filters (e.g. RustRover's, per Cargo package);
+     * plain per-module filters and an accept-all proxy are fallbacks.
+     */
     private fun filters(project: Project, filterType: Class<*>): List<Any> {
         val loader = filterType.classLoader
         val scope = GlobalSearchScope.projectScope(project)
+        projectModelFilters(project).takeIf { it.isNotEmpty() }?.let { return it }
+
         runCatching {
             val moduleFilter = loader.loadClass("com.intellij.microservices.endpoints.ModuleEndpointsFilter")
             val ctor = moduleFilter.constructors.firstOrNull { it.parameterCount == 3 } ?: error("no ctor")
@@ -126,6 +134,28 @@ object OpenApiRoutes {
             return listOf(proxy)
         }
         return emptyList()
+    }
+
+    private fun projectModelFilters(project: Project): List<Any> {
+        val area = ApplicationManager.getApplication().extensionArea
+        if (!area.hasExtensionPoint(PROJECT_MODEL_EP)) return emptyList()
+        return area.getExtensionPoint<Any>(PROJECT_MODEL_EP).extensionList.flatMap { model ->
+            try {
+                val entities = model.javaClass.method("getModuleEntities", 1)?.invoke(model, project) as? Collection<*> ?: emptyList<Any>()
+                val createFilter = model.javaClass.method("createFilter", 3) ?: return@flatMap emptyList()
+                // Production code only: no tests, no libraries.
+                entities.mapNotNull { entity -> entity?.let { createFilter.invoke(model, it, false, false) } }
+            } catch (e: Exception) {
+                rethrowIfCanceled(e)
+                LOG.debug("Could not create endpoint filters with ${model.javaClass.name}", e)
+                emptyList()
+            }
+        }
+    }
+
+    private fun rethrowIfCanceled(e: Exception) {
+        if (e is ProcessCanceledException) throw e
+        (e as? InvocationTargetException)?.targetException?.let { if (it is ProcessCanceledException) throw it }
     }
 
     private fun routesFromTarget(target: Any, source: String): List<ApiRoute> {
@@ -162,13 +192,17 @@ object OpenApiRoutes {
         return "{param}"
     }
 
-    private val PRESENTATION = Regex("""^([A-Z]+)\s+(\S+)""")
+    private val METHOD_WORD = Regex("""\b(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|TRACE)\b""")
+    private val PATH = Regex("""(/[^\s\[\]]*)""")
 
+    /** Fallback for providers without URL target info: "GET /pets", "/pets [GET]", or "/pets" plus a location string. */
     private fun routeFromPresentation(presentation: Any?, source: String): ApiRoute? {
-        val text = presentation?.let { call(it, "getPresentableText") as? String } ?: return null
-        val match = PRESENTATION.find(text.trim())
-        if (match != null) return ApiRoute(match.groupValues[1], match.groupValues[2], source = source)
-        return if (text.trim().startsWith("/")) ApiRoute("GET", text.trim(), source = source) else null
+        presentation ?: return null
+        val text = (call(presentation, "getPresentableText") as? String)?.trim() ?: return null
+        val location = (call(presentation, "getLocationString") as? String).orEmpty()
+        val path = PATH.find(text)?.groupValues?.get(1) ?: return null
+        val method = METHOD_WORD.find(text)?.value ?: METHOD_WORD.find(location)?.value ?: "GET"
+        return ApiRoute(method, path, source = source)
     }
 
     private fun Class<*>.method(name: String, params: Int): Method? =

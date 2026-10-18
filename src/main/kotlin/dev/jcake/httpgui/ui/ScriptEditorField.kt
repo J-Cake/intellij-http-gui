@@ -39,6 +39,8 @@ class ScriptEditorField private constructor(
     private var context: PsiElement? = null
 
     init {
+        // Code is shown in the editor's monospace font, not the UI font.
+        setFontInheritedFromLAF(false)
         setPlaceholder(placeholderText)
         setShowPlaceholderWhenFocused(true)
         addDocumentListener(object : DocumentListener {
