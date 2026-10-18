@@ -106,11 +106,6 @@ object OpenApiRoutes {
         val loader = filterType.classLoader
         val scope = GlobalSearchScope.projectScope(project)
         runCatching {
-            loader.loadClass("com.intellij.microservices.endpoints.SearchScopeEndpointsFilter")
-                .getConstructor(GlobalSearchScope::class.java).newInstance(scope)
-        }.getOrNull()?.let { return listOf(it) }
-
-        runCatching {
             val moduleFilter = loader.loadClass("com.intellij.microservices.endpoints.ModuleEndpointsFilter")
             val ctor = moduleFilter.constructors.firstOrNull { it.parameterCount == 3 } ?: error("no ctor")
             ModuleManager.getInstance(project).modules.map { ctor.newInstance(it, false, false) }
@@ -142,7 +137,11 @@ object OpenApiRoutes {
             (call(a ?: return@mapNotNull null, "getText") as? String)?.takeIf { it.isNotBlank() }
         }.orEmpty()
         val server = authorities.firstOrNull()?.let { (schemes.firstOrNull() ?: "http://").let { s -> if (s.endsWith("://")) s else "$s://" } + it }
-        return methods.map { ApiRoute(method = it, path = path, servers = listOfNotNull(server), source = source) }
+        val query = (call(target, "getQueryParameters") as? Iterable<*>)?.mapNotNull { p -> p?.let { call(it, "getName") as? String } }.orEmpty()
+        val contentType = (call(target, "getContentTypes") as? Collection<*>)?.firstOrNull()?.toString()
+        return methods.map {
+            ApiRoute(method = it, path = path, servers = listOfNotNull(server), queryParams = query.distinct(), contentType = contentType, source = source)
+        }
     }
 
     private fun urlPath(path: Any?): String? {
