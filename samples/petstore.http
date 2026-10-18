@@ -1,0 +1,33 @@
+@version = v1
+
+### List pets
+# @name listPets
+GET {{host}}/{{version}}/pets
+    ?limit=20
+    &status=available
+Accept: application/json
+Authorization: Bearer {{$auth.token("petstore")}}
+
+> {%
+    client.test("Lists pets", function () {
+        client.assert(response.status === 200, "Response status is not 200");
+        client.assert(response.contentType.mimeType.includes("json"), "Expected a JSON response");
+    });
+    client.global.set("firstPetId", jsonPath(response.body, "$[0].id"));
+%}
+
+### Create pet
+POST {{host}}/{{version}}/pets
+Content-Type: application/json
+X-API-Key: {{apiKey}}
+
+{
+  "name": "Rex",
+  "tag": "dog"
+}
+
+> {%
+    client.test("Creates a pet", function () {
+        client.assert(response.status === 201, "Response status is not 201");
+    });
+%}

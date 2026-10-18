@@ -1,0 +1,40 @@
+openapi: 3.0.3
+info:
+  title: Petstore
+  version: 1.0.0
+servers:
+  - url: /v1
+paths:
+  /pets:
+    get:
+      operationId: listPets
+      summary: List all pets
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer }
+    post:
+      operationId: createPet
+      summary: Create a pet
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Pet'
+  /pets/{petId}:
+    get:
+      operationId: showPetById
+      summary: Info for a specific pet
+      parameters:
+        - name: petId
+          in: path
+          required: true
+          schema: { type: string }
+components:
+  schemas:
+    Pet:
+      type: object
+      properties:
+        id: { type: integer, example: 1 }
+        name: { type: string, example: Rex }
+        tag: { type: string }
