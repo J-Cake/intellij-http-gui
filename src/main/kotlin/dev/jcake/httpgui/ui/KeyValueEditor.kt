@@ -1,7 +1,13 @@
 package dev.jcake.httpgui.ui
 
+import com.intellij.codeInsight.lookup.LookupManager
+import com.intellij.openapi.actionSystem.ActionUpdateThread
+import com.intellij.openapi.actionSystem.AnActionEvent
+import com.intellij.openapi.actionSystem.CommonShortcuts
+import com.intellij.openapi.actionSystem.ShortcutSet
 import com.intellij.openapi.editor.event.DocumentEvent
 import com.intellij.openapi.editor.event.DocumentListener
+import com.intellij.openapi.project.DumbAwareAction
 import com.intellij.openapi.project.Project
 import com.intellij.ui.EditorTextField
 import com.intellij.ui.TextFieldWithAutoCompletion
@@ -139,9 +145,24 @@ class KeyValueEditor(
                     }
                 }
             })
+            // Enter commits and Escape cancels, unless the completion popup is open and wants the key.
+            cellKey(editorField, CommonShortcuts.ENTER) { stopCellEditing() }
+            cellKey(editorField, CommonShortcuts.ESCAPE) { cancelCellEditing() }
             field = editorField
             SwingUtilities.invokeLater { editorField.requestFocusInWindow() }
             return editorField
+        }
+
+        private fun cellKey(field: EditorTextField, shortcut: ShortcutSet, action: () -> Unit) {
+            object : DumbAwareAction() {
+                override fun getActionUpdateThread() = ActionUpdateThread.EDT
+
+                override fun update(e: AnActionEvent) {
+                    e.presentation.isEnabled = field.editor?.let { LookupManager.getActiveLookup(it) } == null
+                }
+
+                override fun actionPerformed(e: AnActionEvent) = action()
+            }.registerCustomShortcutSet(shortcut, field)
         }
 
         override fun getCellEditorValue(): Any = field?.text ?: ""

@@ -218,7 +218,8 @@ class RequestEditorPanel(
             "Options" to optionsTab,
         ).forEach { (title, component) ->
             sectionContent.add(component, title)
-            tabs.addTab(TabInfo(JPanel()).setText(title))
+            // Tab pages stay empty (and take no height); the section itself is shown below the strip.
+            tabs.addTab(TabInfo(JPanel().apply { preferredSize = Dimension(0, 0) }).setText(title))
         }
         tabs.addListener(object : TabsListener {
             override fun selectionChanged(oldSelection: TabInfo?, newSelection: TabInfo?) {
