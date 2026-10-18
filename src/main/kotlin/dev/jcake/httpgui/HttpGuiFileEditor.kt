@@ -30,6 +30,7 @@ import com.intellij.util.Alarm
 import com.intellij.util.concurrency.AppExecutorUtil
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
+import com.intellij.util.ui.WrapLayout
 import dev.jcake.httpgui.core.ApiRoute
 import dev.jcake.httpgui.core.DYNAMIC_VARIABLES
 import dev.jcake.httpgui.core.EnvironmentSet
@@ -105,7 +106,7 @@ class HttpGuiFileEditor(
             }
         }
 
-        val toolbar = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(6), JBUI.scale(2))).apply {
+        val toolbar = JPanel(WrapLayout(FlowLayout.LEFT, JBUI.scale(6), JBUI.scale(2))).apply {
             add(JBLabel("Environment:"))
             add(envCombo)
             add(JButton("Reload", AllIcons.Actions.Refresh).apply {
@@ -121,6 +122,8 @@ class HttpGuiFileEditor(
         }
 
         root = JPanel(BorderLayout()).apply {
+            // Let the split editor's divider decide the width instead of the toolbar's preferred size.
+            minimumSize = Dimension(JBUI.scale(200), 0)
             add(toolbar, BorderLayout.NORTH)
             add(JBScrollPane(column).apply {
                 border = JBUI.Borders.empty()

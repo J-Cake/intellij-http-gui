@@ -33,6 +33,7 @@ import java.awt.GridBagLayout
 import javax.swing.JButton
 import javax.swing.JComponent
 import javax.swing.JPanel
+import javax.swing.JTabbedPane
 import javax.swing.JTextField
 import javax.swing.event.DocumentEvent
 import javax.swing.event.DocumentListener
@@ -139,7 +140,8 @@ class RequestEditorPanel(
         addActionListener { update(OPTIONS) { r -> r.copy(httpVersion = (selectedItem as? String)?.ifEmpty { null }) } }
     }
 
-    private val tabs = JBTabbedPane()
+    // One scrollable row of tabs rather than wrapped rows when the designer is narrow.
+    private val tabs = JBTabbedPane().apply { tabLayoutPolicy = JTabbedPane.SCROLL_TAB_LAYOUT }
 
     init {
         add(JBLabel("Select a request on the left, or add a new one.", UIUtil.ComponentStyle.LARGE).apply {
@@ -337,9 +339,14 @@ class RequestEditorPanel(
         update(CONTENT_TYPE) { it.withHeader("Content-Type", value.ifEmpty { null }) }
     }
 
-    private fun routeSuggestions(): List<UrlSuggestion.Route> = ctx.routes().map { route ->
-        UrlSuggestion.Route(route, Urls.split(route.toRequest(ctx.baseUrlFor(route)).url).first)
-    }
+    /**
+     * The same route often comes from both an OpenAPI file and the Endpoints view (with the server
+     * path folded into the path); keep one per method and URL, preferring the one with a summary.
+     */
+    private fun routeSuggestions(): List<UrlSuggestion.Route> = ctx.routes()
+        .map { route -> UrlSuggestion.Route(route, Urls.split(route.toRequest(ctx.baseUrlFor(route)).url).first) }
+        .sortedBy { it.route.summary == null }
+        .distinctBy { it.route.method + " " + it.url }
 
     private fun applyRoute(route: ApiRoute) {
         val base = ctx.baseUrlFor(route)

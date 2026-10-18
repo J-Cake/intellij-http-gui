@@ -34,7 +34,7 @@ object OpenApiRoutes {
     private const val MAX_SPEC_SIZE = 4L * 1024 * 1024
 
     fun collect(project: Project): List<ApiRoute> {
-        val routes = endpointRoutes(project) + specFileRoutes(project)
+        val routes = specFileRoutes(project) + endpointRoutes(project)
         return routes.distinctBy { "${it.method} ${it.path}" }.sortedWith(compareBy({ it.path }, { it.method }))
     }
 
@@ -144,16 +144,22 @@ object OpenApiRoutes {
         }
     }
 
+    /** Renders a `UrlPath` with path variables as `{name}` (its own presentation uses `*`). */
     private fun urlPath(path: Any?): String? {
         if (path == null) return null
-        (call(path, "getPresentation") as? String)?.let { return it }
-        val segments = call(path, "getSegments") as? List<*> ?: return path.toString()
-        return segments.joinToString("/") { segment ->
-            if (segment == null) return@joinToString ""
-            (call(segment, "getValue") as? String)
-                ?: (call(segment, "getVariableName") as? String)?.let { "{$it}" }
-                ?: "{param}"
-        }.let { if (it.startsWith("/")) it else "/$it" }
+        val segments = call(path, "getSegments") as? List<*> ?: return call(path, "getPresentation") as? String ?: path.toString()
+        val rendered = segments.joinToString("/") { renderSegment(it) }
+        return if (rendered.startsWith("/")) rendered else "/$rendered"
+    }
+
+    private fun renderSegment(segment: Any?): String {
+        if (segment == null) return ""
+        (call(segment, "getValue") as? String)?.let { return it }
+        if (segment.javaClass.simpleName == "Variable" || segment.javaClass.name.endsWith("\$Variable")) {
+            return "{" + ((call(segment, "getVariableName") as? String)?.ifBlank { null } ?: "param") + "}"
+        }
+        (call(segment, "getSegments") as? List<*>)?.let { parts -> return parts.joinToString("") { renderSegment(it) } }
+        return "{param}"
     }
 
     private val PRESENTATION = Regex("""^([A-Z]+)\s+(\S+)""")
