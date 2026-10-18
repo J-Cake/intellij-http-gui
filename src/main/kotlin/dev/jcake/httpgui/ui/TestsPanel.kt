@@ -1,11 +1,15 @@
 package dev.jcake.httpgui.ui
 
+import com.intellij.icons.AllIcons
+import com.intellij.openapi.actionSystem.ActionGroup
+import com.intellij.openapi.actionSystem.DefaultActionGroup
+import com.intellij.openapi.project.DumbAwareAction
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.ComboBox
-import com.intellij.ui.JBSplitter
 import com.intellij.ui.SimpleListCellRenderer
 import com.intellij.ui.ToolbarDecorator
 import com.intellij.ui.components.JBLabel
+import com.intellij.ui.components.panels.VerticalLayout
 import com.intellij.ui.table.JBTable
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
@@ -16,7 +20,6 @@ import dev.jcake.httpgui.core.TestScripts
 import dev.jcake.httpgui.core.TestSubject
 import java.awt.BorderLayout
 import java.awt.Component
-import java.awt.FlowLayout
 import javax.swing.DefaultCellEditor
 import javax.swing.JButton
 import javax.swing.JPanel
@@ -82,7 +85,7 @@ class TestsPanel(
 
     private val table = JBTable(tableModel).apply {
         setShowGrid(false)
-        emptyText.text = "No checks yet — add one to generate a test case"
+        emptyText.text = "No checks yet"
         val subjectCombo = ComboBox(TestSubject.entries.toTypedArray()).apply {
             renderer = SimpleListCellRenderer.create<TestSubject>("") { it.label }
         }
@@ -107,7 +110,6 @@ class TestsPanel(
     }
 
     private val customScript = CodeEditorField(project, CodeEditorField.fileTypeFor("js"), { fire() })
-    private val preview = CodeEditorField(project, CodeEditorField.fileTypeFor("js"), viewer = true)
     private val externalLabel = JBLabel()
     private val externalPanel = JPanel(BorderLayout()).apply {
         border = JBUI.Borders.empty(4)
@@ -133,44 +135,32 @@ class TestsPanel(
                 tableModel.fireTableDataChanged()
                 fire()
             }
+            .addExtraAction(templatesGroup())
             .disableUpDownActions()
             .createPanel()
 
-        val presets = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(4), 0)).apply {
-            add(JBLabel("Quick add:"))
-            add(presetButton("Status 200", TestCondition(TestSubject.STATUS, "", TestOperator.EQUALS, "200")))
-            add(presetButton("Status 2xx", TestCondition(TestSubject.STATUS, "", TestOperator.LESS_THAN, "300")))
-            add(presetButton("JSON response", TestCondition(TestSubject.CONTENT_TYPE, "", TestOperator.CONTAINS, "json")))
-            add(presetButton("Field exists", TestCondition(TestSubject.JSON_PATH, "$.id", TestOperator.EXISTS, "")))
-            add(presetButton("Header present", TestCondition(TestSubject.HEADER, "Content-Type", TestOperator.EXISTS, "")))
+        val content = JPanel(VerticalLayout(JBUI.scale(4))).apply {
+            add(externalPanel)
+            add(decorated)
+            add(JBLabel("Additional response handler script:").apply { border = JBUI.Borders.emptyTop(6) })
+            add(customScript)
         }
-
-        val top = JPanel(BorderLayout()).apply {
-            add(externalPanel, BorderLayout.NORTH)
-            add(decorated, BorderLayout.CENTER)
-            add(presets, BorderLayout.SOUTH)
-        }
-
-        val scripts = JBSplitter(false, 0.5f).apply {
-            firstComponent = titled("Additional script (response handler JavaScript)", customScript)
-            secondComponent = titled("Generated handler", preview)
-        }
-
-        val split = JBSplitter(true, 0.45f).apply {
-            firstComponent = top
-            secondComponent = scripts
-        }
-        add(split, BorderLayout.CENTER)
+        add(content, BorderLayout.CENTER)
         updateExternalState()
+        rowsChanged()
     }
 
-    private fun titled(title: String, component: Component) = JPanel(BorderLayout()).apply {
-        add(JBLabel(title).apply { foreground = UIUtil.getContextHelpForeground(); border = JBUI.Borders.empty(4, 0) }, BorderLayout.NORTH)
-        add(component, BorderLayout.CENTER)
+    /** "Add from Template" dropdown next to the table's + button. */
+    private fun templatesGroup(): ActionGroup = DefaultActionGroup("Add from Template", true).apply {
+        templatePresentation.icon = AllIcons.Actions.AddList
+        templatePresentation.description = "Add a common check"
+        TEMPLATES.forEach { (label, condition) -> add(DumbAwareAction.create(label) { addCondition(condition) }) }
     }
 
-    private fun presetButton(text: String, condition: TestCondition) = JButton(text).apply {
-        addActionListener { addCondition(condition) }
+    /** The table grows with its rows, so the request section grows instead of scrolling. */
+    private fun rowsChanged() {
+        table.visibleRowCount = maxOf(conditions.size, MIN_VISIBLE_ROWS)
+        revalidate()
     }
 
     private fun addCondition(condition: TestCondition) {
@@ -178,6 +168,7 @@ class TestsPanel(
         conditions += condition
         tableModel.fireTableDataChanged()
         table.selectionModel.setSelectionInterval(conditions.lastIndex, conditions.lastIndex)
+        rowsChanged()
         fire()
     }
 
@@ -211,7 +202,7 @@ class TestsPanel(
             }
             tableModel.fireTableDataChanged()
             updateExternalState()
-            updatePreview()
+            rowsChanged()
         } finally {
             silent = false
         }
@@ -231,19 +222,22 @@ class TestsPanel(
         return if (code.isBlank()) null else Script.Inline(code)
     }
 
-    private fun updatePreview() {
-        val handler = currentHandler()
-        preview.setTextSilently(
-            when (handler) {
-                is Script.Inline -> "> {%\n${handler.code}\n%}"
-                is Script.FileRef -> "> ${handler.path}"
-                null -> "// No response handler"
-            },
-        )
+    private fun fire() {
+        rowsChanged()
+        if (!silent) onChanged(currentHandler())
     }
 
-    private fun fire() {
-        updatePreview()
-        if (!silent) onChanged(currentHandler())
+    companion object {
+        private const val MIN_VISIBLE_ROWS = 2
+
+        val TEMPLATES = listOf(
+            "Status is 200" to TestCondition(TestSubject.STATUS, "", TestOperator.EQUALS, "200"),
+            "Status is 2xx" to TestCondition(TestSubject.STATUS, "", TestOperator.LESS_THAN, "300"),
+            "Response is JSON" to TestCondition(TestSubject.CONTENT_TYPE, "", TestOperator.CONTAINS, "json"),
+            "JSON field exists" to TestCondition(TestSubject.JSON_PATH, "$.id", TestOperator.EXISTS, ""),
+            "JSON field equals" to TestCondition(TestSubject.JSON_PATH, "$.id", TestOperator.EQUALS, ""),
+            "Header is present" to TestCondition(TestSubject.HEADER, "Content-Type", TestOperator.EXISTS, ""),
+            "Body contains text" to TestCondition(TestSubject.BODY, "", TestOperator.CONTAINS, ""),
+        )
     }
 }

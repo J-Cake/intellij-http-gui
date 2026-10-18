@@ -10,6 +10,7 @@ import com.intellij.ui.components.JBCheckBox
 import com.intellij.ui.tabs.JBTabs
 import com.intellij.ui.tabs.JBTabsFactory
 import com.intellij.ui.tabs.TabInfo
+import com.intellij.ui.tabs.TabsListener
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBTextField
 import com.intellij.ui.components.fields.ExtendableTextField
@@ -56,7 +57,7 @@ interface RequestEditorContext {
 /** Form editing a single [HttpRequest]; every change is reported through [onChanged]. */
 class RequestEditorPanel(
     private val ctx: RequestEditorContext,
-    parentDisposable: Disposable,
+    private val parentDisposable: Disposable,
     private val onChanged: (HttpRequest) -> Unit,
 ) : JPanel(CardLayout()) {
 
@@ -143,11 +144,17 @@ class RequestEditorPanel(
         addActionListener { update(OPTIONS) { r -> r.copy(httpVersion = (selectedItem as? String)?.ifEmpty { null }) } }
     }
 
-    /** The platform's own tabs (as in the Run / Services tool windows): one row, overflow in a dropdown. */
+    /**
+     * The platform's own tabs (as in the Run / Services tool windows): one row, overflow in a dropdown.
+     * They only provide the tab strip; the selected section is shown in [sectionContent], which takes
+     * that section's height, so the request grows and shrinks with what is shown.
+     */
     private val tabs: JBTabs = JBTabsFactory.createTabs(project, parentDisposable).apply {
         presentation.setSingleRow(true)
         presentation.setTabDraggingEnabled(false)
     }
+    private val sectionLayout = FitCardLayout()
+    private val sectionContent = JPanel(sectionLayout)
 
     init {
         add(JBLabel("Select a request on the left, or add a new one.", UIUtil.ComponentStyle.LARGE).apply {
@@ -209,7 +216,17 @@ class RequestEditorPanel(
             "Tests" to testsPanel.withBorder(),
             "Pre-request" to preTab.withBorder(),
             "Options" to optionsTab,
-        ).forEach { (title, component) -> tabs.addTab(TabInfo(component).setText(title)) }
+        ).forEach { (title, component) ->
+            sectionContent.add(component, title)
+            tabs.addTab(TabInfo(JPanel()).setText(title))
+        }
+        tabs.addListener(object : TabsListener {
+            override fun selectionChanged(oldSelection: TabInfo?, newSelection: TabInfo?) {
+                newSelection?.text?.let { sectionLayout.show(sectionContent, it) }
+                sectionContent.revalidate()
+                sectionContent.repaint()
+            }
+        }, parentDisposable)
 
         return JPanel(BorderLayout()).apply {
             add(JPanel(BorderLayout()).apply {
@@ -217,10 +234,10 @@ class RequestEditorPanel(
                 add(identity, BorderLayout.NORTH)
                 add(requestLine, BorderLayout.CENTER)
             }, BorderLayout.NORTH)
-            // Fixed height so the form can live in the designer's scrolling list of requests.
-            add(object : JPanel(BorderLayout()) {
-                override fun getPreferredSize(): Dimension = Dimension(super.getPreferredSize().width, JBUI.scale(TABS_HEIGHT))
-            }.apply { add(tabs.component, BorderLayout.CENTER) }, BorderLayout.CENTER)
+            add(JPanel(BorderLayout()).apply {
+                add(tabs.component, BorderLayout.NORTH)
+                add(sectionContent, BorderLayout.CENTER)
+            }, BorderLayout.CENTER)
         }
     }
 
@@ -394,7 +411,6 @@ class RequestEditorPanel(
     }
 
     companion object {
-        private const val TABS_HEIGHT = 420
         private const val EMPTY_CARD = "empty"
         private const val EDITOR_CARD = "editor"
 

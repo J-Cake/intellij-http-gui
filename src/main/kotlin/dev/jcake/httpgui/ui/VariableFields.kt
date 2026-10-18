@@ -18,9 +18,11 @@ import com.intellij.openapi.project.Project
 import com.intellij.ui.EditorTextField
 import com.intellij.ui.TextFieldWithAutoCompletion
 import com.intellij.ui.TextFieldWithAutoCompletionListProvider
+import com.intellij.util.ui.JBUI
 import dev.jcake.httpgui.core.ApiRoute
 import dev.jcake.httpgui.core.VariableInfo
 import dev.jcake.httpgui.core.Variables
+import java.awt.Dimension
 
 /** Completes `{{variable}}` references from environments, in-file variables and dynamic variables. */
 class VariableCompletionProvider(private val variables: () -> List<VariableInfo>) :
@@ -98,9 +100,20 @@ class CodeEditorField(
     init {
         addDocumentListener(object : DocumentListener {
             override fun documentChanged(event: DocumentEvent) {
+                // Let the enclosing request section grow or shrink with the text.
+                revalidate()
                 if (!silent) onTextChanged(event.document.text)
             }
         })
+    }
+
+    /** Grows with its content between [MIN_LINES] and [MAX_LINES] lines, then scrolls. */
+    override fun getPreferredSize(): Dimension {
+        val size = super.getPreferredSize()
+        val lineHeight = editor?.lineHeight ?: JBUI.scale(18)
+        val lines = document.lineCount.coerceIn(MIN_LINES, MAX_LINES) + 1
+        val insets = insets.top + insets.bottom
+        return Dimension(size.width, lines * lineHeight + insets + JBUI.scale(12))
     }
 
     override fun createEditor(): EditorEx {
@@ -124,6 +137,9 @@ class CodeEditorField(
     }
 
     companion object {
+        private const val MIN_LINES = 5
+        private const val MAX_LINES = 30
+
         fun fileTypeFor(extension: String): FileType =
             FileTypeManager.getInstance().getFileTypeByExtension(extension).takeUnless { it.isBinary } ?: PlainTextFileType.INSTANCE
 

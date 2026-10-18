@@ -18,7 +18,6 @@ import dev.jcake.httpgui.core.SHARED_ENV
 import dev.jcake.httpgui.core.Urls
 import dev.jcake.httpgui.core.VariableInfo
 import java.awt.BorderLayout
-import java.awt.CardLayout
 import java.awt.FlowLayout
 import javax.swing.ButtonGroup
 import javax.swing.JButton
@@ -46,7 +45,7 @@ class AuthPanel(
 
     private var silent = false
     private var kind = Kind.NONE
-    private val cards = CardLayout()
+    private val cards = FitCardLayout()
     private val cardPanel = JPanel(cards)
     private val kindButtons = Kind.entries.associateWith { JBRadioButton(it.label) }
 
@@ -83,6 +82,7 @@ class AuthPanel(
                 if (silent) return@addActionListener
                 kind = k
                 cards.show(cardPanel, k.name)
+                cardPanel.revalidate()
                 if (k == Kind.OAUTH2) refreshOAuthChoices()
                 fire()
             }
@@ -236,6 +236,7 @@ class AuthPanel(
             }
             kindButtons.getValue(kind).isSelected = true
             cards.show(cardPanel, kind.name)
+            cardPanel.revalidate()
         } finally {
             silent = false
         }
