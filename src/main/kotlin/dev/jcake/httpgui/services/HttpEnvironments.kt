@@ -15,7 +15,8 @@ import dev.jcake.httpgui.core.EnvironmentFile
 import dev.jcake.httpgui.core.EnvironmentSet
 import dev.jcake.httpgui.core.PRIVATE_ENV_FILE
 import dev.jcake.httpgui.core.PUBLIC_ENV_FILE
-import dev.jcake.httpgui.core.updateAuthConfig
+import dev.jcake.httpgui.core.setAuthConfig
+import dev.jcake.httpgui.core.splitSecrets
 
 /** Locates and reads the HTTP Client environment files that apply to an `.http` file. */
 object HttpEnvironments {
@@ -48,31 +49,35 @@ object HttpEnvironments {
     private fun text(file: VirtualFile): String =
         FileDocumentManager.getInstance().getCachedDocument(file)?.text ?: runCatching { VfsUtilCore.loadText(file) }.getOrDefault("")
 
-    /** Writes an OAuth configuration into the env files next to [httpFile], creating them if needed. */
-    fun saveAuthConfig(
-        project: Project,
-        httpFile: VirtualFile,
-        environment: String,
-        id: String,
-        publicValues: Map<String, Any?>,
-        privateValues: Map<String, Any?>,
-    ) {
+    /** A change to one `Security.Auth` entry; a null [config] removes it. */
+    data class AuthChange(val environment: String, val id: String, val config: Map<String, Any?>?)
+
+    /**
+     * Writes OAuth configurations to the env files next to [httpFile] (or the ones it uses), creating
+     * them if needed. Secrets go to the private file, everything else to the public one.
+     */
+    fun writeAuthConfigs(project: Project, httpFile: VirtualFile, changes: List<AuthChange>) {
+        if (changes.isEmpty()) return
         val dir = existingEnvDir(project, httpFile) ?: httpFile.parent ?: return
-        WriteCommandAction.runWriteCommandAction(project, "Save HTTP Client Auth Configuration", null, Runnable {
-            update(dir, PUBLIC_ENV_FILE, environment, id, publicValues)
-            if (privateValues.values.any { it != null && it != "" }) update(dir, PRIVATE_ENV_FILE, environment, id, privateValues)
+        WriteCommandAction.runWriteCommandAction(project, "Save HTTP Client Auth Configurations", null, Runnable {
+            for (change in changes) {
+                val (public, private) = change.config?.let { splitSecrets(it) } ?: (null to null)
+                update(dir, PUBLIC_ENV_FILE, create = public != null) { setAuthConfig(it, change.environment, change.id, public) }
+                update(dir, PRIVATE_ENV_FILE, create = !private.isNullOrEmpty()) { setAuthConfig(it, change.environment, change.id, private) }
+            }
         })
     }
 
     private fun existingEnvDir(project: Project, httpFile: VirtualFile): VirtualFile? =
         findEnvFiles(project, httpFile).firstOrNull { it.name == PUBLIC_ENV_FILE }?.parent
 
-    private fun update(dir: VirtualFile, name: String, environment: String, id: String, values: Map<String, Any?>) {
-        val file = dir.findChild(name) ?: dir.createChildData(this, name)
+    private fun update(dir: VirtualFile, name: String, create: Boolean, transform: (String) -> String) {
+        val file = dir.findChild(name) ?: if (create) dir.createChildData(this, name) else return
         val documents = FileDocumentManager.getInstance()
         val document = documents.getDocument(file)
         val current = document?.text ?: VfsUtilCore.loadText(file)
-        val updated = updateAuthConfig(current.ifBlank { "{}" }, environment, id, values)
+        val updated = transform(current.ifBlank { "{}" })
+        if (updated == current) return
         if (document != null) {
             document.setText(updated)
             documents.saveDocument(document)

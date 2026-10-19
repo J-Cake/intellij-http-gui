@@ -24,7 +24,6 @@ interface RequestCardHost {
     val context: RequestEditorContext
     val disposable: Disposable
     fun requestChanged(card: RequestCard, request: HttpRequest)
-    fun insertBelow(card: RequestCard)
     fun showInText(card: RequestCard)
     fun duplicate(card: RequestCard)
     fun remove(card: RequestCard)
@@ -73,7 +72,6 @@ class RequestCard(
     init {
         isOpaque = false
         val actions = DefaultActionGroup(
-            DumbAwareAction.create("Add Request Below", AllIcons.General.Add) { host.insertBelow(this) },
             DumbAwareAction.create("Duplicate Request", AllIcons.Actions.Copy) { host.duplicate(this) },
             DumbAwareAction.create("Show in Text Editor", AllIcons.Actions.EditSource) { host.showInText(this) },
             DumbAwareAction.create("Delete Request", AllIcons.Actions.GC) { host.remove(this) },
