@@ -45,6 +45,7 @@ class AuthPanel(
 
     private var silent = false
     private var kind = Kind.NONE
+    private var checkedWithEnvironments = false
     private val cards = FitCardLayout()
     private val cardPanel = JPanel(cards)
     private val kindButtons = Kind.entries.associateWith { JBRadioButton(it.label) }
@@ -163,6 +164,20 @@ class AuthPanel(
 
     /** Re-reads configuration names and status after environment files or the selection changed. */
     fun refreshOAuthChoices() {
+        // The environment default is only known once the env files are read; recognize it then, once.
+        if (!checkedWithEnvironments && environments().files.isNotEmpty()) {
+            checkedWithEnvironments = true
+            val auth = currentAuth()
+            if (!useEnvironment.isSelected && auth is AuthConfig.OAuth2 && !auth.idToken && auth.configId == environmentAuthId()) {
+                silent = true
+                try {
+                    useEnvironment.isSelected = true
+                } finally {
+                    silent = false
+                }
+                updateVisibility()
+            }
+        }
         silent = true
         try {
             val currentId = currentOAuthId()
