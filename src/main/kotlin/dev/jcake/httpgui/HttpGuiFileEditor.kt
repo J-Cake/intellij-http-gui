@@ -23,6 +23,7 @@ import com.intellij.openapi.fileEditor.FileEditor
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileEditor.FileEditorState
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
+import com.intellij.openapi.fileEditor.TextEditorWithPreview
 import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.project.DumbAwareAction
 import com.intellij.openapi.project.Project
@@ -57,8 +58,11 @@ import dev.jcake.httpgui.core.Script
 import dev.jcake.httpgui.core.ScriptTemplates
 import dev.jcake.httpgui.core.VariableInfo
 import dev.jcake.httpgui.core.VariableSource
+import dev.jcake.httpgui.services.HttpClientBridge
 import dev.jcake.httpgui.services.HttpEnvironments
 import dev.jcake.httpgui.services.OpenApiRoutes
+import dev.jcake.httpgui.ui.EnvironmentAuth
+import dev.jcake.httpgui.ui.EnvironmentAuthDialog
 import dev.jcake.httpgui.ui.RequestCard
 import dev.jcake.httpgui.ui.RequestCardHost
 import dev.jcake.httpgui.ui.RequestEditorContext
@@ -101,6 +105,7 @@ class HttpGuiFileEditor(
     private val writeAlarm = Alarm(Alarm.ThreadToUse.SWING_THREAD, this)
     private val envAlarm = Alarm(Alarm.ThreadToUse.SWING_THREAD, this)
     private val routesAlarm = Alarm(Alarm.ThreadToUse.SWING_THREAD, this)
+    private val envPollAlarm = Alarm(Alarm.ThreadToUse.SWING_THREAD, this)
 
     private val cards = mutableListOf<RequestCard>()
     private val column = ColumnPanel()
@@ -110,22 +115,21 @@ class HttpGuiFileEditor(
     override val disposable: Disposable get() = this
 
     init {
-        val actions = DefaultActionGroup(
-            EnvironmentAction(),
-            Separator.getInstance(),
-            DumbAwareAction.create("Add Request", AllIcons.General.Add) { insertRequest(cards.size, newRequest()) },
-            DumbAwareAction.create("Expand All", AllIcons.Actions.Expandall) { cards.forEach { it.setExpanded(true) } },
-            DumbAwareAction.create("Collapse All", AllIcons.Actions.Collapseall) { cards.forEach { it.setExpanded(false) } },
-            Separator.getInstance(),
-            DumbAwareAction.create("Reload File, Environments and Routes", AllIcons.Actions.Refresh) {
-                reloadNow(pushToForms = true)
-                reloadEnvironments()
-                refreshRoutes()
-            },
-        )
-        val toolbar = ActionManager.getInstance().createActionToolbar(TOOLBAR_PLACE, actions, true).apply {
-            targetComponent = column
-            component.border = JBUI.Borders.compound(JBUI.Borders.customLineBottom(JBColor.border()), JBUI.Borders.empty(1, 4))
+        // With the HTTP Client installed, its toolbar ("Run with" etc.) carries the designer's actions
+        // (see httpgui-restclient.xml); otherwise the designer has a small toolbar of its own.
+        val toolbar = if (HttpClientBridge.isAvailable) null else {
+            val actions = DefaultActionGroup(
+                EnvironmentAction(),
+                Separator.getInstance(),
+                DumbAwareAction.create("Expand All", AllIcons.Actions.Expandall) { expandAll(true) },
+                DumbAwareAction.create("Collapse All", AllIcons.Actions.Collapseall) { expandAll(false) },
+                Separator.getInstance(),
+                DumbAwareAction.create("Environment Authentication…", AllIcons.Nodes.SecurityRole) { openAuthSettings(null) },
+            )
+            ActionManager.getInstance().createActionToolbar(TOOLBAR_PLACE, actions, true).apply {
+                targetComponent = column
+                component.border = JBUI.Borders.compound(JBUI.Borders.customLineBottom(JBColor.border()), JBUI.Borders.empty(1, 4))
+            }
         }
 
         val scrollPane = JBScrollPane(column).apply {
@@ -138,7 +142,7 @@ class HttpGuiFileEditor(
             // Tab / Shift+Tab cycle through the designer's fields instead of escaping into the text editor.
             isFocusCycleRoot = true
             focusTraversalPolicy = LayoutFocusTraversalPolicy()
-            add(toolbar.component, BorderLayout.NORTH)
+            toolbar?.let { add(it.component, BorderLayout.NORTH) }
             add(scrollPane, BorderLayout.CENTER)
         }
 
@@ -175,9 +179,28 @@ class HttpGuiFileEditor(
             }
         }, this)
 
+        if (HttpClientBridge.isAvailable) {
+            selectedEnv = HttpClientBridge.selectedEnvironment(project, httpFile)
+            followRunWithEnvironment()
+        }
         syncCards(pushToForms = true)
         reloadEnvironments()
         refreshRoutes()
+    }
+
+    /**
+     * Follows the environment chosen in the HTTP Client's "Run with" selector. It publishes no change
+     * event, so it is polled; reading it is a map lookup.
+     */
+    private fun followRunWithEnvironment() {
+        envPollAlarm.addRequest({
+            val now = HttpClientBridge.selectedEnvironment(project, httpFile)
+            if (now != selectedEnv) {
+                selectedEnv = now
+                cards.forEach { it.refreshEnvironment() }
+            }
+            followRunWithEnvironment()
+        }, ENV_POLL_MS)
     }
 
     // ---- document -> GUI ----------------------------------------------------------------------
@@ -222,8 +245,14 @@ class HttpGuiFileEditor(
             column.add(JPanel(FlowLayout(FlowLayout.CENTER, JBUI.scale(4), 0)).apply {
                 isOpaque = false
                 border = JBUI.Borders.empty(24)
-                add(JBLabel("No requests yet.").apply { foreground = UIUtil.getContextHelpForeground() })
-                add(ActionLink("Add request") { insertRequest(0, newRequest()) })
+                if (HttpClientBridge.isAvailable) {
+                    add(JBLabel("No requests yet. Add one with + in the toolbar above, or type one in the text editor.").apply {
+                        foreground = UIUtil.getContextHelpForeground()
+                    })
+                } else {
+                    add(JBLabel("No requests yet.").apply { foreground = UIUtil.getContextHelpForeground() })
+                    add(ActionLink("Add request") { insertRequest(0, newRequest()) })
+                }
             })
         }
         cards.forEachIndexed { index, card ->
@@ -304,10 +333,6 @@ class HttpGuiFileEditor(
         column.scrollRectToVisible(card.bounds)
     }
 
-    override fun insertBelow(card: RequestCard) {
-        insertRequest(cards.indexOf(card) + 1, newRequest())
-    }
-
     override fun duplicate(card: RequestCard) {
         val position = cards.indexOf(card)
         val r = card.request
@@ -362,7 +387,7 @@ class HttpGuiFileEditor(
             .expireWith(this)
             .finishOnUiThread(ModalityState.any()) { loaded ->
                 environments = loaded
-                selectedEnv = selectedEnv?.takeIf { it in loaded.environmentNames }
+                if (!HttpClientBridge.isAvailable) selectedEnv = selectedEnv?.takeIf { it in loaded.environmentNames }
                 cards.forEach { it.refreshEnvironment() }
             }
             .submit(AppExecutorUtil.getAppExecutorService())
@@ -401,9 +426,15 @@ class HttpGuiFileEditor(
         return values
     }
 
-    override fun saveOAuthConfig(environment: String, id: String, publicValues: Map<String, Any?>, privateValues: Map<String, Any?>) {
-        HttpEnvironments.saveAuthConfig(project, httpFile, environment, id, publicValues, privateValues)
-        reloadEnvironments()
+    override fun environmentAuthId(): String = EnvironmentAuth.id(project, environments)
+
+    override fun openAuthSettings(configId: String?) {
+        if (EnvironmentAuthDialog(project, httpFile, environments, selectedEnv, configId).showAndGet()) reloadEnvironments()
+    }
+
+    /** Expands or collapses every request (also offered in the HTTP Client's toolbar). */
+    fun expandAll(expanded: Boolean) {
+        cards.forEach { it.setExpanded(expanded) }
     }
 
     override fun baseUrlFor(route: ApiRoute): String {
@@ -517,6 +548,13 @@ class HttpGuiFileEditor(
         private const val WRITE_DELAY_MS = 200
         private const val ENV_DELAY_MS = 500
         private const val ROUTES_DELAY_MS = 1500
+        private const val ENV_POLL_MS = 700
+
+        /** The designer showing [file], if one is open. */
+        fun find(project: Project, file: VirtualFile): HttpGuiFileEditor? =
+            FileEditorManager.getInstance(project).getAllEditors(file).firstNotNullOfOrNull { editor ->
+                editor as? HttpGuiFileEditor ?: (editor as? TextEditorWithPreview)?.previewEditor as? HttpGuiFileEditor
+            }
 
         /** Files with at most this many requests open with every card expanded. */
         private const val EXPAND_ALL_LIMIT = 8

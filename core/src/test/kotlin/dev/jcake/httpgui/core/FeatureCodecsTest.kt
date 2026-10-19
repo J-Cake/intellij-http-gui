@@ -49,13 +49,59 @@ class FeatureCodecsTest {
     }
 
     @Test
-    fun `auth config update keeps other content`() {
+    fun `auth config editing keeps other content`() {
         val text = """{"dev": {"host": "h"}}"""
-        val updated = updateAuthConfig(text, "dev", "auth", mapOf("Type" to "OAuth2", "Scope" to ""))
-        val parsed = Json.parse(updated) as Map<*, *>
+        val added = setAuthConfig(text, "dev", "auth", mapOf("Type" to "OAuth2", "Client ID" to "app"))
         assertEquals(
-            mapOf("dev" to mapOf("host" to "h", "Security" to mapOf("Auth" to mapOf("auth" to mapOf("Type" to "OAuth2"))))),
-            parsed,
+            mapOf("dev" to mapOf("host" to "h", "Security" to mapOf("Auth" to mapOf("auth" to mapOf("Type" to "OAuth2", "Client ID" to "app"))))),
+            Json.parse(added),
+        )
+        val removed = setAuthConfig(added, "dev", "auth", null)
+        assertEquals(mapOf("dev" to mapOf("host" to "h")), Json.parse(removed))
+        // Removing from an environment the file doesn't have leaves it untouched.
+        assertEquals(text, setAuthConfig(text, "prod", "auth", null))
+    }
+
+    @Test
+    fun `oauth settings are trimmed to the grant type`() {
+        val config = mapOf(
+            OAuthKeys.TYPE to "OAuth2",
+            OAuthKeys.GRANT_TYPE to OAuthKeys.CLIENT_CREDENTIALS,
+            OAuthKeys.AUTH_URL to "https://idp/authorize",
+            OAuthKeys.TOKEN_URL to "https://idp/token",
+            OAuthKeys.USERNAME to "jane",
+            OAuthKeys.CLIENT_ID to "app",
+            OAuthKeys.SCOPE to "",
+            OAuthKeys.PKCE to true,
+            OAuthKeys.ACQUIRE_AUTOMATICALLY to true,
+        )
+        assertEquals(
+            mapOf(
+                OAuthKeys.TYPE to "OAuth2",
+                OAuthKeys.GRANT_TYPE to OAuthKeys.CLIENT_CREDENTIALS,
+                OAuthKeys.TOKEN_URL to "https://idp/token",
+                OAuthKeys.CLIENT_ID to "app",
+                OAuthKeys.ACQUIRE_AUTOMATICALLY to true,
+            ),
+            OAuthKeys.normalize(config),
+        )
+        val (public, private) = splitSecrets(mapOf(OAuthKeys.CLIENT_ID to "app", OAuthKeys.CLIENT_SECRET to "s"))
+        assertEquals(mapOf(OAuthKeys.CLIENT_ID to "app"), public)
+        assertEquals(mapOf(OAuthKeys.CLIENT_SECRET to "s"), private)
+    }
+
+    @Test
+    fun `oidc discovery`() {
+        assertEquals("https://idp.example/realms/x/.well-known/openid-configuration", OidcDiscovery.documentUrl("https://idp.example/realms/x/"))
+        assertEquals(
+            "https://idp.example/.well-known/openid-configuration",
+            OidcDiscovery.documentUrl("https://idp.example/.well-known/openid-configuration"),
+        )
+        val document = """{"issuer": "https://idp.example", "authorization_endpoint": "https://idp.example/auth",
+            "token_endpoint": "https://idp.example/token", "device_authorization_endpoint": "https://idp.example/device"}"""
+        assertEquals(
+            mapOf(OAuthKeys.AUTH_URL to "https://idp.example/auth", OAuthKeys.TOKEN_URL to "https://idp.example/token", OAuthKeys.DEVICE_AUTH_URL to "https://idp.example/device"),
+            OidcDiscovery.endpoints(document),
         )
     }
 

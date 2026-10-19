@@ -7,6 +7,7 @@ import com.intellij.codeInsight.lookup.CharFilter
 import com.intellij.codeInsight.lookup.LookupElement
 import com.intellij.codeInsight.lookup.LookupElementBuilder
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.lang.Language
 import com.intellij.openapi.editor.EditorFactory
 import com.intellij.openapi.editor.event.DocumentEvent
 import com.intellij.openapi.editor.event.DocumentListener
@@ -145,14 +146,21 @@ class CodeEditorField(
         fun fileTypeFor(extension: String): FileType =
             FileTypeManager.getInstance().getFileTypeByExtension(extension).takeUnless { it.isBinary } ?: PlainTextFileType.INSTANCE
 
+        /**
+         * The file type for a body with [contentType], via the languages registered for that MIME
+         * type (so any installed language plugin counts), then `+json` / `+xml` suffixes.
+         */
         fun fileTypeForContentType(contentType: String?): FileType {
-            val ct = contentType?.lowercase() ?: return PlainTextFileType.INSTANCE
+            val mime = contentType?.substringBefore(';')?.trim()?.lowercase()?.takeIf { it.isNotEmpty() } ?: return PlainTextFileType.INSTANCE
+            Language.findInstancesByMimeType(mime).firstNotNullOfOrNull { it.associatedFileType }?.let { return it }
             return when {
-                ct.contains("json") -> fileTypeFor("json")
-                ct.contains("xml") -> fileTypeFor("xml")
-                ct.contains("html") -> fileTypeFor("html")
-                ct.contains("graphql") -> fileTypeFor("graphql")
-                ct.contains("yaml") -> fileTypeFor("yaml")
+                mime.endsWith("+json") || mime.contains("json") -> fileTypeFor("json")
+                mime.endsWith("+xml") || mime.contains("xml") -> fileTypeFor("xml")
+                mime.contains("html") -> fileTypeFor("html")
+                mime.contains("graphql") -> fileTypeFor("graphql")
+                mime.contains("yaml") -> fileTypeFor("yaml")
+                mime.contains("javascript") -> fileTypeFor("js")
+                mime == "text/css" -> fileTypeFor("css")
                 else -> PlainTextFileType.INSTANCE
             }
         }

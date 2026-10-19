@@ -78,29 +78,24 @@ class EnvironmentSet(val files: List<EnvironmentFile>) {
         return result
     }
 
+    /** `Security.Auth` configurations defined directly in [environment] (public and private files merged). */
+    fun authConfigsIn(environment: String): Map<String, Map<String, Any?>> {
+        val result = LinkedHashMap<String, MutableMap<String, Any?>>()
+        for (file in files.sortedBy { it.isPrivate }) {
+            val auth = ((file.environments[environment]?.get("Security") as? Map<*, *>)?.get("Auth") as? Map<*, *>) ?: continue
+            auth.forEach { (id, cfg) ->
+                if (id is String && cfg is Map<*, *>) {
+                    val merged = result.getOrPut(id) { LinkedHashMap() }
+                    cfg.forEach { (k, v) -> if (k is String) merged[k] = v }
+                }
+            }
+        }
+        return result
+    }
+
     companion object {
         val EMPTY = EnvironmentSet(emptyList())
     }
-}
-
-/**
- * Updates `Security.Auth.<id>` of [environment] inside the JSON text of an environment file and
- * returns the new text. Values that are null are removed.
- */
-fun updateAuthConfig(fileText: String, environment: String, id: String, values: Map<String, Any?>): String {
-    @Suppress("UNCHECKED_CAST")
-    val root = (runCatching { Json.parse(fileText) }.getOrNull() as? Map<String, Any?>)?.let { LinkedHashMap(it) }
-        ?: LinkedHashMap()
-    val env = LinkedHashMap((root[environment] as? Map<String, Any?>) ?: emptyMap())
-    val security = LinkedHashMap((env["Security"] as? Map<String, Any?>) ?: emptyMap())
-    val auth = LinkedHashMap((security["Auth"] as? Map<String, Any?>) ?: emptyMap())
-    val config = LinkedHashMap((auth[id] as? Map<String, Any?>) ?: emptyMap())
-    values.forEach { (k, v) -> if (v == null || (v is String && v.isEmpty())) config.remove(k) else config[k] = v }
-    auth[id] = config
-    security["Auth"] = auth
-    env["Security"] = security
-    root[environment] = env
-    return Json.write(root) + "\n"
 }
 
 /** Built-in dynamic variables of the HTTP Client. */

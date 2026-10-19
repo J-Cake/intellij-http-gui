@@ -106,22 +106,3 @@ object AuthCodec {
         }
     }
 }
-
-/** Keys used by the HTTP Client for `Security.Auth` entries in `http-client.env.json`. */
-object OAuthKeys {
-    const val TYPE = "Type"
-    const val GRANT_TYPE = "Grant Type"
-    const val AUTH_URL = "Auth URL"
-    const val TOKEN_URL = "Token URL"
-    const val CLIENT_ID = "Client ID"
-    const val CLIENT_SECRET = "Client Secret"
-    const val SCOPE = "Scope"
-    const val REDIRECT_URL = "Redirect URL"
-    const val USERNAME = "Username"
-    const val PASSWORD = "Password"
-    const val PKCE = "PKCE"
-
-    val GRANT_TYPES = listOf("Authorization Code", "Client Credentials", "Password", "Implicit", "Device Authorization")
-    val FIELDS = listOf(GRANT_TYPE, AUTH_URL, TOKEN_URL, CLIENT_ID, CLIENT_SECRET, SCOPE, REDIRECT_URL, USERNAME, PASSWORD)
-    val SECRET_FIELDS = setOf(CLIENT_SECRET, PASSWORD)
-}

@@ -6,7 +6,9 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.ComboBox
 import com.intellij.openapi.ui.popup.JBPopupFactory
 import com.intellij.psi.PsiElement
+import com.intellij.ui.ColoredListCellRenderer
 import com.intellij.ui.SimpleListCellRenderer
+import com.intellij.ui.SimpleTextAttributes
 import com.intellij.ui.components.JBCheckBox
 import com.intellij.ui.tabs.JBTabs
 import com.intellij.ui.tabs.JBTabsFactory
@@ -38,6 +40,7 @@ import java.awt.GridBagConstraints
 import java.awt.GridBagLayout
 import javax.swing.JButton
 import javax.swing.JComponent
+import javax.swing.JList
 import javax.swing.JPanel
 import javax.swing.JTextField
 import javax.swing.event.DocumentEvent
@@ -50,7 +53,11 @@ interface RequestEditorContext {
     fun environments(): EnvironmentSet
     fun selectedEnvironment(): String?
     fun resolvedValues(): Map<String, String?>
-    fun saveOAuthConfig(environment: String, id: String, publicValues: Map<String, Any?>, privateValues: Map<String, Any?>)
+    /** Name of the OAuth configuration used by requests with "Use environment authentication". */
+    fun environmentAuthId(): String
+
+    /** Opens the environment authentication settings, optionally at a configuration. */
+    fun openAuthSettings(configId: String?)
     /** Routes from the Endpoints view and OpenAPI files, as last collected. */
     fun routes(): List<ApiRoute>
     fun baseUrlFor(route: ApiRoute): String
@@ -78,6 +85,13 @@ class RequestEditorPanel(
         isEditable = true
         toolTipText = "HTTP method — pick one or type your own"
         prototypeDisplayValue = "OPTIONS__"
+        // Methods in their usual colours, in the list and in the field.
+        renderer = object : ColoredListCellRenderer<String>() {
+            override fun customizeCellRenderer(list: JList<out String>, value: String?, index: Int, selected: Boolean, hasFocus: Boolean) {
+                value ?: return
+                append(value, SimpleTextAttributes(SimpleTextAttributes.STYLE_BOLD, RequestCard.methodColor(value)))
+            }
+        }
         addActionListener { onMethodEdited() }
         (editor.editorComponent as? JTextField)?.document?.addDocumentListener(swingListener { onMethodEdited() })
     }
@@ -125,7 +139,7 @@ class RequestEditorPanel(
     private val bodyEditor = CodeEditorField(project, bodyFileType, { text -> update(BODY) { it.copy(body = text) } })
 
     private val authPanel = AuthPanel(
-        project, ctx::variables, ctx::environments, ctx::selectedEnvironment, ctx::saveOAuthConfig,
+        project, ctx::variables, ctx::environments, ctx::selectedEnvironment, ctx::environmentAuthId, ctx::openAuthSettings,
     ) { auth -> update(AUTH) { AuthCodec.apply(it, auth) } }
 
     private val testsLabel = hintLabel()
@@ -292,6 +306,7 @@ class RequestEditorPanel(
         updating = true
         try {
             if (source != METHOD && methodText() != r.method) methodCombo.selectedItem = r.method
+            colorMethod()
             if (source != URL) urlField.setTextSilently(r.url)
             if (source != TITLE && titleField.text != (r.title ?: "")) titleField.text = r.title ?: ""
             if (source != NAME && nameField.text.trim() != (r.name ?: "")) nameField.text = r.name ?: ""
@@ -380,7 +395,12 @@ class RequestEditorPanel(
     private fun methodText(): String =
         ((methodCombo.editor.editorComponent as? JTextField)?.text ?: methodCombo.selectedItem?.toString() ?: "").trim()
 
+    private fun colorMethod() {
+        (methodCombo.editor.editorComponent as? JTextField)?.foreground = RequestCard.methodColor(methodText().uppercase())
+    }
+
     private fun onMethodEdited() {
+        colorMethod()
         val method = methodText().uppercase().filter { it.isLetterOrDigit() || it == '_' || it == '-' }
         if (method.isEmpty()) return
         update(METHOD) { it.copy(method = method) }

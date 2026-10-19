@@ -2,7 +2,7 @@ package dev.jcake.httpgui.ui
 
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.ComboBox
-import com.intellij.ui.TitledSeparator
+import com.intellij.ui.components.ActionLink
 import com.intellij.ui.components.JBCheckBox
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBRadioButton
@@ -13,28 +13,28 @@ import dev.jcake.httpgui.core.AuthCodec
 import dev.jcake.httpgui.core.AuthConfig
 import dev.jcake.httpgui.core.EnvironmentSet
 import dev.jcake.httpgui.core.HttpRequest
-import dev.jcake.httpgui.core.OAuthKeys
-import dev.jcake.httpgui.core.SHARED_ENV
 import dev.jcake.httpgui.core.Urls
 import dev.jcake.httpgui.core.VariableInfo
 import java.awt.BorderLayout
 import java.awt.FlowLayout
 import javax.swing.ButtonGroup
-import javax.swing.JButton
 import javax.swing.JComponent
 import javax.swing.JPanel
 
 /**
- * Authentication dashboard: picks an auth scheme and edits its parameters. OAuth 2.0 is backed by
- * the HTTP Client's `Security.Auth` environment configuration, which can be edited here too.
+ * Per-request authentication. Either the request uses the environment's authentication (an OAuth
+ * configuration with the same name in every environment, see [EnvironmentAuthDialog]), or it picks
+ * its own scheme.
  */
 class AuthPanel(
     private val project: Project,
     private val variables: () -> List<VariableInfo>,
     private val environments: () -> EnvironmentSet,
     private val selectedEnvironment: () -> String?,
-    /** Saves an OAuth configuration: environment, id, public values, private (secret) values. */
-    private val saveOAuthConfig: (String, String, Map<String, Any?>, Map<String, Any?>) -> Unit,
+    /** Name of the OAuth configuration used by requests with environment authentication. */
+    private val environmentAuthId: () -> String,
+    /** Opens the environment authentication settings, optionally at a configuration. */
+    private val openAuthSettings: (configId: String?) -> Unit,
     private val onChanged: (AuthConfig) -> Unit,
 ) : JPanel(BorderLayout()) {
 
@@ -45,9 +45,28 @@ class AuthPanel(
 
     private var silent = false
     private var kind = Kind.NONE
+    private var checkedWithEnvironments = false
     private val cards = FitCardLayout()
     private val cardPanel = JPanel(cards)
     private val kindButtons = Kind.entries.associateWith { JBRadioButton(it.label) }
+
+    private val useEnvironment = JBCheckBox("Use environment authentication").apply {
+        addActionListener {
+            if (silent) return@addActionListener
+            updateVisibility()
+            if (!isSelected) {
+                // Continue from the equivalent per-request setting.
+                kind = Kind.OAUTH2
+                kindButtons.getValue(kind).isSelected = true
+                cards.show(cardPanel, kind.name)
+                setOAuthId(environmentAuthId())
+            }
+            refreshStatus()
+            fire()
+        }
+    }
+    private val environmentStatus = hint("")
+    private val perRequest = JPanel(BorderLayout())
 
     private fun field() = VariableTextField(project, variables) { fire() }
 
@@ -63,14 +82,10 @@ class AuthPanel(
 
     private val oauthId = ComboBox<String>().apply {
         isEditable = true
-        addActionListener { if (!silent) { loadOAuthConfig(); fire() } }
+        addActionListener { if (!silent) { refreshStatus(); fire() } }
     }
-    private val oauthIdToken = JBCheckBox("Use ID token (\$auth.idToken) instead of access token").apply { addActionListener { fire() } }
-    private val oauthEnv = ComboBox<String>().apply { addActionListener { if (!silent) loadOAuthConfig() } }
-    private val grantType = ComboBox(OAuthKeys.GRANT_TYPES.toTypedArray()).apply { isEditable = true }
-    private val oauthFields = (OAuthKeys.FIELDS - OAuthKeys.GRANT_TYPE).associateWith { VariableTextField(project, variables) }
-    private val pkce = JBCheckBox("Use PKCE")
-    private val oauthStatus = JBLabel().apply { foreground = UIUtil.getContextHelpForeground() }
+    private val oauthIdToken = JBCheckBox("Use the ID token instead of the access token").apply { addActionListener { fire() } }
+    private val oauthStatus = hint("")
 
     init {
         val group = ButtonGroup()
@@ -107,32 +122,31 @@ class AuthPanel(
             addLabeledComponent("Value:", apiKeyValue)
             addComponent(apiKeyInQuery)
         }, Kind.API_KEY.name)
-        cardPanel.add(oauthCard(), Kind.OAUTH2.name)
+        cardPanel.add(form {
+            addLabeledComponent("Configuration:", JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(8), 0)).apply {
+                add(oauthId)
+                add(ActionLink("Edit configurations…") { openAuthSettings(currentOAuthId().ifEmpty { null }) })
+            })
+            addComponent(oauthIdToken)
+            addComponent(oauthStatus)
+        }, Kind.OAUTH2.name)
         cardPanel.add(form {
             addLabeledComponent("Authorization:", customHeader)
             addComponent(hint("Raw value of the Authorization header."))
         }, Kind.CUSTOM.name)
 
-        add(kindRow, BorderLayout.NORTH)
-        add(cardPanel.apply { border = JBUI.Borders.emptyTop(8) }, BorderLayout.CENTER)
-        kindButtons.getValue(Kind.NONE).isSelected = true
-    }
+        perRequest.add(kindRow, BorderLayout.NORTH)
+        perRequest.add(cardPanel.apply { border = JBUI.Borders.emptyTop(8) }, BorderLayout.CENTER)
 
-    private fun oauthCard(): JComponent {
-        val save = JButton("Save to Environment File").apply {
-            addActionListener { saveCurrentOAuthConfig() }
+        val environmentRow = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(8), 0)).apply {
+            add(useEnvironment)
+            add(ActionLink("Configure…") { openAuthSettings(environmentAuthId()) })
+            add(environmentStatus)
         }
-        return form {
-            addLabeledComponent("Auth configuration:", oauthId)
-            addComponent(oauthIdToken)
-            addComponent(TitledSeparator("Configuration (Security.Auth in http-client.env.json)"))
-            addLabeledComponent("Environment:", oauthEnv)
-            addLabeledComponent("Grant type:", grantType)
-            oauthFields.forEach { (key, f) -> addLabeledComponent("$key:", f) }
-            addComponent(pkce)
-            addComponent(JPanel(FlowLayout(FlowLayout.LEFT, 0, 0)).apply { add(save); add(oauthStatus) })
-            addComponent(hint("Secrets (client secret, password) are saved to http-client.private.env.json."))
-        }
+        add(environmentRow, BorderLayout.NORTH)
+        add(perRequest.apply { border = JBUI.Borders.emptyTop(8) }, BorderLayout.CENTER)
+        kindButtons.getValue(Kind.NONE).isSelected = true
+        updateVisibility()
     }
 
     private fun form(build: FormBuilder.() -> Unit): JComponent {
@@ -142,59 +156,60 @@ class AuthPanel(
 
     private fun hint(text: String) = JBLabel(text).apply { foreground = UIUtil.getContextHelpForeground() }
 
+    private fun updateVisibility() {
+        perRequest.isVisible = !useEnvironment.isSelected
+        revalidate()
+        repaint()
+    }
+
+    /** Re-reads configuration names and status after environment files or the selection changed. */
     fun refreshOAuthChoices() {
+        // The environment default is only known once the env files are read; recognize it then, once.
+        if (!checkedWithEnvironments && environments().files.isNotEmpty()) {
+            checkedWithEnvironments = true
+            val auth = currentAuth()
+            if (!useEnvironment.isSelected && auth is AuthConfig.OAuth2 && !auth.idToken && auth.configId == environmentAuthId()) {
+                silent = true
+                try {
+                    useEnvironment.isSelected = true
+                } finally {
+                    silent = false
+                }
+                updateVisibility()
+            }
+        }
         silent = true
         try {
-            val envs = environments()
             val currentId = currentOAuthId()
             oauthId.removeAllItems()
-            envs.authConfigs(null).keys.forEach { oauthId.addItem(it) }
+            environments().authConfigs(null).keys.forEach { oauthId.addItem(it) }
             oauthId.selectedItem = currentId.ifEmpty { oauthId.getItemAt(0) ?: "" }
-
-            val currentEnv = oauthEnv.selectedItem as? String
-            oauthEnv.removeAllItems()
-            (listOf(SHARED_ENV) + envs.environmentNames).forEach { oauthEnv.addItem(it) }
-            oauthEnv.selectedItem = currentEnv ?: selectedEnvironment() ?: envs.environmentNames.firstOrNull() ?: SHARED_ENV
         } finally {
             silent = false
         }
-        loadOAuthConfig()
+        refreshStatus()
     }
 
-    private fun loadOAuthConfig() {
-        val id = currentOAuthId()
-        val env = oauthEnv.selectedItem as? String
-        val config = environments().authConfigs(env)[id].orEmpty()
-        grantType.selectedItem = config[OAuthKeys.GRANT_TYPE]?.toString() ?: OAuthKeys.GRANT_TYPES.first()
-        oauthFields.forEach { (key, f) -> f.setTextSilently(config[key]?.toString() ?: "") }
-        pkce.isSelected = config[OAuthKeys.PKCE] != null && config[OAuthKeys.PKCE] != false
-        oauthStatus.text = if (id.isNotEmpty() && config.isEmpty()) "  Not defined for this environment yet" else ""
+    private fun setOAuthId(id: String) {
+        silent = true
+        try {
+            oauthId.selectedItem = id
+        } finally {
+            silent = false
+        }
     }
 
-    private fun saveCurrentOAuthConfig() {
-        val id = currentOAuthId()
-        val env = oauthEnv.selectedItem as? String ?: return
-        if (id.isEmpty()) {
-            oauthStatus.text = "  Enter a configuration name first"
-            return
+    /** Points out a configuration that is missing in the selected environment. */
+    private fun refreshStatus() {
+        val env = selectedEnvironment()
+        fun status(id: String): String = when {
+            id.isEmpty() -> "Choose or type a configuration name."
+            env == null -> "Select an environment in the toolbar to use '$id'."
+            id !in environments().authConfigs(env) -> "'$id' isn't configured for the '$env' environment yet."
+            else -> ""
         }
-        val publicValues = linkedMapOf<String, Any?>(
-            OAuthKeys.TYPE to "OAuth2",
-            OAuthKeys.GRANT_TYPE to grantType.editor.item?.toString(),
-        )
-        val privateValues = linkedMapOf<String, Any?>()
-        oauthFields.forEach { (key, f) ->
-            if (key in OAuthKeys.SECRET_FIELDS) {
-                privateValues[key] = f.text
-                publicValues[key] = null
-            } else {
-                publicValues[key] = f.text
-            }
-        }
-        publicValues[OAuthKeys.PKCE] = if (pkce.isSelected) true else null
-        saveOAuthConfig(env, id, publicValues, privateValues)
-        oauthStatus.text = "  Saved"
-        fire()
+        environmentStatus.text = if (useEnvironment.isSelected) status(environmentAuthId()) else ""
+        oauthStatus.text = if (kind == Kind.OAUTH2) status(currentOAuthId()) else ""
     }
 
     private fun currentOAuthId(): String = (oauthId.editor.item ?: oauthId.selectedItem)?.toString()?.trim() ?: ""
@@ -215,9 +230,13 @@ class AuthPanel(
     }
 
     private fun setAuth(auth: AuthConfig) {
-        if (auth == currentAuth()) return
+        if (auth == currentAuth()) {
+            refreshStatus()
+            return
+        }
         silent = true
         try {
+            useEnvironment.isSelected = auth is AuthConfig.OAuth2 && !auth.idToken && auth.configId == environmentAuthId()
             kind = when (auth) {
                 AuthConfig.None -> Kind.NONE
                 is AuthConfig.Basic -> Kind.BASIC.also { basicUser.setTextSilently(auth.username); basicPassword.setTextSilently(auth.password) }
@@ -240,17 +259,21 @@ class AuthPanel(
         } finally {
             silent = false
         }
-        if (kind == Kind.OAUTH2) refreshOAuthChoices()
+        updateVisibility()
+        if (kind == Kind.OAUTH2) refreshOAuthChoices() else refreshStatus()
     }
 
-    private fun currentAuth(): AuthConfig = when (kind) {
-        Kind.NONE -> AuthConfig.None
-        Kind.BASIC -> AuthConfig.Basic(basicUser.text, basicPassword.text)
-        Kind.DIGEST -> AuthConfig.Digest(digestUser.text, digestPassword.text)
-        Kind.BEARER -> AuthConfig.Bearer(bearerToken.text)
-        Kind.API_KEY -> AuthConfig.ApiKey(apiKeyName.text.ifBlank { "X-API-Key" }, apiKeyValue.text, apiKeyInQuery.isSelected)
-        Kind.OAUTH2 -> AuthConfig.OAuth2(currentOAuthId(), oauthIdToken.isSelected)
-        Kind.CUSTOM -> AuthConfig.Custom(customHeader.text)
+    private fun currentAuth(): AuthConfig {
+        if (useEnvironment.isSelected) return AuthConfig.OAuth2(environmentAuthId())
+        return when (kind) {
+            Kind.NONE -> AuthConfig.None
+            Kind.BASIC -> AuthConfig.Basic(basicUser.text, basicPassword.text)
+            Kind.DIGEST -> AuthConfig.Digest(digestUser.text, digestPassword.text)
+            Kind.BEARER -> AuthConfig.Bearer(bearerToken.text)
+            Kind.API_KEY -> AuthConfig.ApiKey(apiKeyName.text.ifBlank { "X-API-Key" }, apiKeyValue.text, apiKeyInQuery.isSelected)
+            Kind.OAUTH2 -> AuthConfig.OAuth2(currentOAuthId(), oauthIdToken.isSelected)
+            Kind.CUSTOM -> AuthConfig.Custom(customHeader.text)
+        }
     }
 
     private fun fire() {

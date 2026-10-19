@@ -1,0 +1,16 @@
+<!-- Loaded only when the HTTP Client plugin is enabled: puts the designer's actions in its editor toolbar. -->
+<idea-plugin>
+    <actions>
+        <group id="HttpRequestDesigner.Toolbar">
+            <separator/>
+            <action id="HttpRequestDesigner.ExpandAll" class="dev.jcake.httpgui.actions.ExpandAllRequestsAction"
+                    text="Expand All Requests" description="Expand every request in the designer" icon="AllIcons.Actions.Expandall"/>
+            <action id="HttpRequestDesigner.CollapseAll" class="dev.jcake.httpgui.actions.CollapseAllRequestsAction"
+                    text="Collapse All Requests" description="Collapse every request in the designer" icon="AllIcons.Actions.Collapseall"/>
+            <action id="HttpRequestDesigner.EnvironmentAuth" class="dev.jcake.httpgui.actions.EnvironmentAuthenticationAction"
+                    text="Environment Authentication…" description="Configure OAuth 2.0 authentication per environment"
+                    icon="AllIcons.Nodes.SecurityRole"/>
+            <add-to-group group-id="HTTPClient.Toolbar.ProvidedActions" anchor="last"/>
+        </group>
+    </actions>
+</idea-plugin>
